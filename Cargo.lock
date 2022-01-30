@@ -162,6 +162,7 @@ dependencies = [
  "clap",
  "filetime",
  "fnv",
+ "lazy_static",
  "log",
  "regex",
  "simple_logger",

@@ -1,7 +1,8 @@
 use itertools::Itertools;
 use metamath_knife::{
+  comment_parser::{CommentItem, CommentParser},
   nameck::{Atom, Nameset},
-  parser::{as_str, StatementRef, StatementType},
+  parser::{as_str, Span, StatementRef, StatementType},
   proof::ProofTreeArray,
   scopeck::{Frame, Hyp, VerifyExpr},
   *,
@@ -18,16 +19,16 @@ const GREEN_TITLE_COLOR: &str = "#006633";
 const MINT_BACKGROUND_COLOR: &str = "#EEFFFA";
 
 fn main() {
+  let label = std::env::args().nth(1).unwrap();
   let mut db = Database::default();
   db.parse("../mm/set.mm".into(), vec![]);
   db.scope_pass();
   db.typesetting_pass();
+  let stmt = db.statement(label.as_bytes()).unwrap();
   let renderer = Renderer::new(&db);
 
-  let label = "pntleml";
   // let mut w = &mut File::create(format!("{}.html", label)).unwrap();
   let w = &mut std::io::stdout();
-  let stmt = db.statement(label.as_bytes()).unwrap();
   renderer.show_statement(w, stmt, true, true).unwrap();
 }
 
@@ -42,13 +43,13 @@ struct Renderer<'a> {
   // html_home: &'a str,
   html_dir: &'a str,
   alt_html_dir: &'a str,
-  // html_bibliography: &'a str,
+  html_bibliography: &'a str,
   html_css: String,
   html_font: Option<&'a str>,
   // ext_html_label: &'a str,
   // ext_html_title: &'a str,
   // ext_html_home: &'a str,
-  // ext_html_bibliography: &'a str,
+  ext_html_bibliography: &'a str,
   html_ext_url: &'a str,
   title_abbr: String,
   home_href: &'a str,
@@ -89,13 +90,13 @@ impl<'a> Renderer<'a> {
       // html_home,
       html_dir: ts.html_dir.as_deref().map_or("", as_str),
       alt_html_dir: ts.alt_html_dir.as_deref().map_or("", as_str),
-      // html_bibliography: ts.html_bibliography.as_deref().map_or("", as_str),
+      html_bibliography: ts.html_bibliography.as_deref().map_or("", as_str),
       html_css: ts.html_css.as_deref().map_or("", as_str).replace("\\n", "\n"),
       html_font: ts.html_font.as_deref().map(as_str),
       // ext_html_label: ts.ext_html_label.as_deref().map_or("", as_str),
       // ext_html_title: ts.ext_html_title.as_deref().map_or("", as_str),
       // ext_html_home: ts.ext_html_home.as_deref().map_or("", as_str),
-      // ext_html_bibliography: ts.ext_html_bibliography.as_deref().map_or("", as_str),
+      ext_html_bibliography: ts.ext_html_bibliography.as_deref().map_or("", as_str),
       html_ext_url: ts.html_ext_url.as_deref().map_or("", as_str),
       title_abbr: format!(
         "{} Home",
@@ -269,6 +270,114 @@ impl<'a> TokenIter<'a> {
   }
 }
 
+struct Comment<'a, 'b> {
+  buf: &'a [u8],
+  span: Span,
+  r: &'b Renderer<'a>,
+  html_defs: &'b HashMap<&'a [u8], &'a str>,
+  html_span: Option<&'a str>,
+  html_bibliography: &'a str,
+}
+
+impl<'a> Renderer<'a> {
+  fn comment(&self, buf: &'a [u8], span: Span, alt: bool, ext: bool) -> Comment<'a, '_> {
+    Comment {
+      buf,
+      span,
+      r: self,
+      html_defs: if alt { &self.alt_html_defs } else { &self.html_defs },
+      html_span: if alt { self.html_font } else { None },
+      html_bibliography: if ext { self.ext_html_bibliography } else { self.html_bibliography },
+    }
+  }
+}
+
+impl Display for Comment<'_, '_> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let mut parser = CommentParser::new(self.buf, self.span);
+    let mut htmls = 0;
+    let mut trim_prev_ws = true;
+    while let Some(item) = parser.next() {
+      let mut out = vec![];
+      match item {
+        CommentItem::Text(sp) => {
+          out.clear();
+          parser.unescape_text(sp, &mut out);
+          let mut s = std::str::from_utf8(&out).unwrap();
+          if trim_prev_ws {
+            const CLOSING_PUNCTUATION: &str = ".,;)?!:]'\"_-";
+            s = s.trim_start();
+            trim_prev_ws = false;
+            if matches!(s.chars().next(), Some(c) if !CLOSING_PUNCTUATION.contains(c)) {
+              write!(f, " ")?
+            }
+          }
+          if htmls == 0 {
+            write!(f, "{}", s)?
+          } else {
+            write!(f, "{}", s.replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;"))?
+          }
+        }
+        CommentItem::LineBreak(_) => {
+          trim_prev_ws = true;
+          write!(f, "<P STYLE=\"margin-bottom:0em\">")?
+        }
+        CommentItem::StartMathMode(_) =>
+          if let Some(html_font) = self.html_span {
+            write!(f, "<SPAN {}>", html_font)?
+          },
+        CommentItem::EndMathMode(_) => {
+          trim_prev_ws = true;
+          if self.html_span.is_some() {
+            write!(f, "</SPAN>")?
+          }
+        }
+        CommentItem::MathToken(sp) => {
+          out.clear();
+          parser.unescape_text(sp, &mut out);
+          write!(f, "{}", self.html_defs[&*out])?
+        }
+        CommentItem::Label(_, sp) => {
+          trim_prev_ws = true;
+          out.clear();
+          parser.unescape_text(sp, &mut out);
+          write!(
+            f,
+            "<A HREF=\"{label}.html\">{label}</A>{pink}",
+            label = as_str(&out),
+            pink = self.r.pink_num(Some(self.r.pink_numbers[&*out])),
+          )?
+        }
+        CommentItem::Url(_, sp) => {
+          trim_prev_ws = true;
+          out.clear();
+          parser.unescape_text(sp, &mut out);
+          write!(f, "<A HREF=\"{url}\">{url}</A>", url = as_str(&out))?
+        }
+        CommentItem::StartHtml(_) => htmls += 1,
+        CommentItem::EndHtml(_) => htmls -= 1,
+        CommentItem::StartSubscript(_) => write!(f, "<SUB><FONT SIZE=\"-1\">")?,
+        CommentItem::EndSubscript(_) => write!(f, "</FONT></SUB>")?,
+        CommentItem::StartItalic(_) => write!(f, "<I>")?,
+        CommentItem::EndItalic(_) => {
+          trim_prev_ws = true;
+          write!(f, "</I>")?
+        }
+        CommentItem::BibTag(sp) => {
+          trim_prev_ws = false;
+          write!(
+            f,
+            "[<A HREF=\"{file}#{tag}\">{tag}</A>]",
+            file = self.html_bibliography,
+            tag = as_str(sp.as_ref(self.buf))
+          )?
+        }
+      }
+    }
+    Ok(())
+  }
+}
+
 struct VerifyExprHtml<'a> {
   fr: &'a FrameRenderer<'a>,
   e: &'a VerifyExpr,
@@ -345,12 +454,9 @@ impl<'a> Renderer<'a> {
     };
     let label = stmt.label();
     let s_label = as_str(label);
-    let seg = stmt.segment();
-    let span = stmt.associated_comment().unwrap().span();
-    let comment = as_str(&seg.buffer[(span.start + 2) as usize..(span.end - 2) as usize])
-      .replace("<", "&lt;")
-      .replace(">", "&gt;")
-      .replace("&", "&amp;");
+    let seg = stmt.segment().segment;
+    let comment =
+      self.comment(&seg.buffer, stmt.associated_comment().unwrap().comment_contents(), alt, false);
 
     let cur = db.name_result().lookup_label(label).unwrap().address;
     let (prev, wrap_prev) = match db.statements_range_address(..cur).rfind(|s| s.is_assertion()) {
