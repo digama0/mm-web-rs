@@ -16,6 +16,7 @@ use std::{
 };
 
 const GREEN_TITLE_COLOR: &str = "#006633";
+const GRAY_BORDER_COLOR: &str = "#B2B2B2";
 const MINT_BACKGROUND_COLOR: &str = "#EEFFFA";
 
 pub(crate) struct Renderer<'a> {
@@ -31,7 +32,7 @@ pub(crate) struct Renderer<'a> {
   alt_html_dir: &'a str,
   html_bibliography: &'a str,
   html_css: String,
-  html_font: Option<&'a str>,
+  html_font: &'a str,
   // ext_html_label: &'a str,
   // ext_html_title: &'a str,
   // ext_html_home: &'a str,
@@ -77,8 +78,13 @@ impl<'a> Renderer<'a> {
       html_dir: ts.html_dir.as_deref().map_or("", as_str),
       alt_html_dir: ts.alt_html_dir.as_deref().map_or("", as_str),
       html_bibliography: ts.html_bibliography.as_deref().map_or("", as_str),
-      html_css: ts.html_css.as_deref().map_or("", as_str).replace("\\n", "\n"),
-      html_font: ts.html_font.as_deref().map(as_str),
+      html_css: ts
+        .html_css
+        .as_deref()
+        .map_or("", as_str)
+        .replace("\\n", "\n")
+        .replace("STYLE TYPE=\"text/css\"", "style"),
+      html_font: ts.html_font.as_deref().map_or("", as_str),
       // ext_html_label: ts.ext_html_label.as_deref().map_or("", as_str),
       // ext_html_title: ts.ext_html_title.as_deref().map_or("", as_str),
       // ext_html_home: ts.ext_html_home.as_deref().map_or("", as_str),
@@ -179,7 +185,6 @@ struct FrameRenderer<'a> {
   names: &'a Nameset,
   html_defs: &'a HashMap<&'a [u8], &'a str>,
   frame: &'a Frame,
-  html_span: Option<&'a str>,
 }
 
 impl<'a> Renderer<'a> {
@@ -187,7 +192,6 @@ impl<'a> Renderer<'a> {
     FrameRenderer {
       names: self.db.name_result(),
       html_defs: if alt { &self.alt_html_defs } else { &self.html_defs },
-      html_span: if alt { self.html_font } else { None },
       frame,
     }
   }
@@ -196,10 +200,7 @@ impl<'a> Renderer<'a> {
 impl<'a> FrameRenderer<'a> {
   fn verify_expr(&'a self, e: &'a VerifyExpr) -> impl Display + 'a {
     DisplayFn(|f| {
-      if let Some(html_font) = self.html_span {
-        write!(f, "<SPAN {}>", html_font)?
-      }
-      write!(f, "{}", self.get_atom(e.typecode))?;
+      write!(f, "<span class=math>{}", self.get_atom(e.typecode))?;
       let mut iter = TokenIter::new();
       for frag in &*e.tail {
         iter.pool = &self.frame.const_pool[frag.prefix.clone()];
@@ -212,26 +213,17 @@ impl<'a> FrameRenderer<'a> {
       while let Some(tk) = iter.next() {
         write!(f, "{}", self.html_defs[tk])?
       }
-      if self.html_span.is_some() {
-        write!(f, "</SPAN>")?
-      }
-      Ok(())
+      write!(f, "</span>")
     })
   }
 
   fn expr(&'a self, typecode: &'a [u8], e: &'a [u8]) -> impl Display + 'a {
     DisplayFn(|f| {
-      if let Some(html_font) = self.html_span {
-        write!(f, "<SPAN {}>", html_font)?
-      }
-      write!(f, "{}", self.html_defs[typecode])?;
+      write!(f, "<span class=math>{}", self.html_defs[typecode])?;
       for tk in e.split(|&c| c == b' ').skip(1) {
         write!(f, "{}", self.html_defs[tk])?
       }
-      if self.html_span.is_some() {
-        write!(f, "</SPAN>")?
-      }
-      Ok(())
+      write!(f, "</span>")
     })
   }
 
@@ -261,7 +253,6 @@ struct Comment<'a, 'b> {
   span: Span,
   r: &'b Renderer<'a>,
   html_defs: &'b HashMap<&'a [u8], &'a str>,
-  html_span: Option<&'a str>,
   html_bibliography: &'a str,
 }
 
@@ -272,7 +263,6 @@ impl<'a> Renderer<'a> {
       span,
       r: self,
       html_defs: if alt { &self.alt_html_defs } else { &self.html_defs },
-      html_span: if alt { self.html_font } else { None },
       html_bibliography: if ext { self.ext_html_bibliography } else { self.html_bibliography },
     }
   }
@@ -308,15 +298,10 @@ impl Display for Comment<'_, '_> {
           trim_prev_ws = true;
           write!(f, "<P STYLE=\"margin-bottom:0em\">")?
         }
-        CommentItem::StartMathMode(_) =>
-          if let Some(html_font) = self.html_span {
-            write!(f, "<SPAN {}>", html_font)?
-          },
+        CommentItem::StartMathMode(_) => write!(f, "<span {}>", self.r.html_font)?,
         CommentItem::EndMathMode(_) => {
           trim_prev_ws = true;
-          if self.html_span.is_some() {
-            write!(f, "</SPAN>")?
-          }
+          write!(f, "</span>")?
         }
         CommentItem::MathToken(sp) => {
           out.clear();
@@ -377,10 +362,7 @@ impl<'a> std::ops::Deref for VerifyExprHtml<'a> {
 
 impl Display for VerifyExprHtml<'_> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    if let Some(html_font) = self.html_span {
-      write!(f, "<SPAN {}>", html_font)?
-    }
-    write!(f, "{}", self.get_atom(self.e.typecode))?;
+    write!(f, "<span class=math>{}", self.get_atom(self.e.typecode))?;
     let mut iter = TokenIter::new();
     for frag in &*self.e.tail {
       iter.pool = &self.frame.const_pool[frag.prefix.clone()];
@@ -393,10 +375,7 @@ impl Display for VerifyExprHtml<'_> {
     while let Some(tk) = iter.next() {
       write!(f, "{}", self.html_defs[tk])?
     }
-    if self.html_span.is_some() {
-      write!(f, "</SPAN>")?
-    }
-    Ok(())
+    write!(f, "</span>")
   }
 }
 
@@ -407,16 +386,11 @@ struct ExprHtml<'a> {
 
 impl Display for ExprHtml<'_> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    if let Some(html_font) = self.fr.html_span {
-      write!(f, "<SPAN {}>", html_font)?
-    }
+    write!(f, "<span class=math>")?;
     for tk in self.e.split(|&c| c == b' ') {
       write!(f, "{}", self.fr.html_defs[tk])?
     }
-    if self.fr.html_span.is_some() {
-      write!(f, "</SPAN>")?
-    }
-    Ok(())
+    write!(f, "</span>")
   }
 }
 
@@ -460,67 +434,82 @@ impl<'a> Renderer<'a> {
     writeln!(
       w,
       "<!DOCTYPE html>\n\
-      <HTML LANG=\"EN-US\"><HEAD>\n\
-        <META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=iso-8859-1\">\n\
-        <meta charset=\"iso-8859-1\">\n\
-        <META NAME=\"viewport\" CONTENT=\"width=device-width, initial-scale=1.0\">\n\
-        <STYLE TYPE=\"text/css\">\n\
+      <html lang=\"en-us\"><head>\n\
+        <meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\n\
+        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n\
+        <style>\n\
         <!--\n\
-        img {{ margin-bottom: -4px }}\n\
+        img {{ border: 0; margin-bottom: -4px }}\n\
+        .steps {{ \
+          text-align: center; border-spacing: 0; background-color: {bgcolor}; \
+          margin-left: auto; margin-right: auto; \
+          border: outset 1px {border_color}; \
+        }}\n\
+        .steps td, .steps th {{ border: inset 1px {border_color}; }}\n\
+        .steps th {{ text-align: center; }}\n\
+        .steps td {{ text-align: left; }}\n\
+        .title {{ font-weight: bold; color: {title_color}; }}\n\
+        .bottom-table {{ \
+          text-align: center; border-spacing: 5px; \
+          margin-left: auto; margin-right: auto; \
+        }}\n\
+        .bottom-table td {{ text-align: left; font-size: small; }}\n\
+        hr {{ border-style: solid; border-top: 1px; }}\n\
         .r {{ font-family: \"Arial Narrow\"; font-size: x-small; }}\n\
         .i {{ font-family: \"Arial Narrow\"; font-size: x-small; color: gray; }}\n\
         -->\n\
-        </STYLE>\n\
+        </style>\n\
         {css}\n\
-        <TITLE>{label} - {title}</TITLE>\n\
-        <LINK REL=\"shortcut icon\" HREF=\"favicon.ico\" TYPE=\"image/x-icon\">\n\
-      </HEAD><BODY BGCOLOR=\"#FFFFFF\">\n\
-        <TABLE BORDER=0 CELLSPACING=0 CELLPADDING=0 WIDTH=\"100%\">\n\
-          <TR>\n\
-            <TD ALIGN=LEFT VALIGN=TOP WIDTH=\"25%\">\n\
-              <A HREF= \"{home_href}\">\n\
-                <IMG SRC=\"{home_img}\" BORDER=0 ALT=\"{title_abbr}\" TITLE=\"{title_abbr}\" \
-                  HEIGHT=32 WIDTH=32 ALIGN=TOP STYLE=\"margin-bottom:0px\">\n\
-              </A>\n\
-            </TD>\n\
-            <TD ALIGN=CENTER COLSPAN=2 VALIGN=TOP>\n\
-              <FONT SIZE=\"+3\" COLOR=\"{title_color}\">\n\
-                <B>{title}</B>\n\
-              </FONT>\n\
-            </TD><TD ALIGN=RIGHT VALIGN=TOP WIDTH=\"25%\">\n\
-              <FONT SIZE=-1 FACE=sans-serif>\n\
-                <A HREF=\"{prev}.html\">&lt; {prev_text}</A>&nbsp;&nbsp;\
-                <A HREF=\"{next}.html\">{next_text} &gt;</A>\n\
-              </FONT><FONT FACE=sans-serif SIZE=-2>\n\
-                <BR/><A HREF=\"mmtheorems{page}.html#{label}\">Nearby theorems</A>\n\
-              </FONT>\n\
-            </TD>\n\
-          </TR><TR>\n\
-            <TD COLSPAN=2 ALIGN=LEFT VALIGN=TOP>
-              <FONT SIZE=-2 FACE=sans-serif>\n\
-                <A HREF=\"../mm.html\">Mirrors</A>&nbsp; &gt; &nbsp;\
-                <A HREF=\"../index.html\">Home</A>&nbsp; &gt; &nbsp;\
-                <A HREF=\"{home_href}\">{title_abbr}</A>&nbsp; &gt; &nbsp;\
-                <A HREF=\"mmtheorems.html\">Th. List</A>&nbsp; &gt; &nbsp;\
-                {mbox}\
-                {label}\
-            </FONT>\n\
-          </TD><TD COLSPAN=2 ALIGN=RIGHT VALIGN=TOP>\n\
-            <FONT SIZE=-2 FACE=sans-serif>\n\
-                {html_ext_url}\
-                <A HREF=\"{other_dir}{label}.html\">{other_name} version</A>\n\
-              </FONT>\n\
-            </TD>\n\
-          </TR>\n\
-        </TABLE>\n\
-        <HR NOSHADE SIZE=1/>\n\
-        <CENTER>\n\
-          <B><FONT SIZE=\"+1\">{sub_type} <FONT COLOR=\"{title_color}\">{label}</FONT></FONT></B>
-          {pink_html}
-        </CENTER>\n\
-        <CENTER><TABLE><TR><TD ALIGN=LEFT>\
-          <B>Description: </B>{comment}\
-        </TD></TR></TABLE></CENTER>",
+        <title>{label} - {title}</title>\n\
+        <link rel=\"shortcut icon\" href=\"favicon.ico\" type=\"image/x-icon\">\n\
+      </head><body style=\"background-color: #FFFFFF\">\n\
+        <table style=\"border-width: 0; border-spacing: 0; width: 100%\">\n\
+          <tr>\n\
+            <td style=\"padding: 0; text-align: left; vertical-align: top; width: 25%\">\n\
+              <a href=\"{home_href}\">\n\
+                <img src=\"http://us.metamath.org/mpeuni/{home_img}\" alt=\"{title_abbr}\" title=\"{title_abbr}\" \
+                  height=32 width=32 style=\"vertical-align: top; margin-bottom: 0px\">\n\
+              </a>\n\
+            </td>\n\
+            <td style=\"padding: 0; text-align: center; vertical-align: top\" colspan=2>\n\
+              <b style=\"font-size: xx-large; color: {title_color}\">{title}</b>\n\
+            </td>\n\
+            <td style=\"padding: 0; text-align: right; vertical-align: top; width: 25%; \
+                font-size: x-small; font-family: sans-serif\">\n\
+              <span style=\"font-size: small\">\n\
+                <a href=\"{prev}.html\">&lt; {prev_text}</a>&nbsp;&nbsp;\n\
+                <a href=\"{next}.html\">{next_text} &gt;</a>\n\
+              </span><br/>\
+              <a href=\"mmtheorems{page}.html#{label}\">Nearby theorems</a>\n\
+            </td>\n\
+          </tr><tr style=\"font-size: x-small; font-family: sans-serif; vertical-align: top\">\n\
+            <td style=\"padding: 0; text-align: left\" colspan=2>\
+              <a href=\"../mm.html\">Mirrors</a>&nbsp; &gt; &nbsp;\
+              <a href=\"../index.html\">Home</a>&nbsp; &gt; &nbsp;\
+              <a href=\"{home_href}\">{title_abbr}</a>&nbsp; &gt; &nbsp;\
+              <a href=\"mmtheorems.html\">Th. List</a>&nbsp; &gt; &nbsp;\
+              {mbox}\
+              {label}\
+            </td>\n\
+            <td style=\"padding: 0; text-align: right\" colspan=2>\
+              {html_ext_url}\
+              <a href=\"{other_dir}{label}.html\">{other_name} version</a>\
+            </td>\n\
+          </tr>\n\
+        </table>\n\
+        <hr />\n\
+        <div style=\"text-align: center\">\n\
+          <b style=\"font-size: large\">\
+            {sub_type} <span class=title>{label}</span>\
+          </b>{pink_html}\
+        </div>\n\
+        <div style=\"text-align: center; padding: 3px\">\n\
+          <div style=\"text-align: left; display: inline-block\">\
+            <b>Description: </b>{comment}\
+          </div>\n\
+        </div>",
+      border_color = GRAY_BORDER_COLOR,
+      bgcolor = MINT_BACKGROUND_COLOR,
       css = css,
       label = s_label,
       title = title,
@@ -534,7 +523,7 @@ impl<'a> Renderer<'a> {
       next_text = if wrap_next { "Wrap" } else { "Next" },
       page = self.pink_numbers[stmt.label()] / 100 + 1,
       mbox = if in_mbox {
-        "<A HREF=\"mmtheorems.html#sandbox:bighdr\">Mathboxes</A>&nbsp; &gt; &nbsp;"
+        "<a href=\"mmtheorems.html#sandbox:bighdr\">Mathboxes</a>&nbsp; &gt; &nbsp;"
       } else {
         ""
       },
@@ -552,11 +541,9 @@ impl<'a> Renderer<'a> {
     if num_hyps != 0 {
       writeln!(
         w,
-        "<CENTER>\n\
-        <TABLE BORDER CELLSPACING=0 BGCOLOR=\"{bgcolor}\" SUMMARY=\"Hypothes{es}\">\n\
-          <CAPTION><B>Hypothes{es}</B></CAPTION>\n\
-          <TR><TH>Ref</TH><TH>Expression</TH></TR>",
-        bgcolor = MINT_BACKGROUND_COLOR,
+        "<table class=steps>\n\
+          <caption><b>Hypothes{es}</b></caption>\n\
+          <tr><th>Ref</th><th>Expression</th></tr>",
         es = if num_hyps == 1 { "is" } else { "es" },
       )?;
       for hyp in &*fr.hypotheses {
@@ -564,26 +551,24 @@ impl<'a> Renderer<'a> {
           let s = db.statement_by_address(s);
           writeln!(
             w,
-            "<TR ALIGN=LEFT><TD>{label}</TD><TD>{fmla}</TD></TR>",
+            "<tr><td>{label}</td><td class=math>{fmla}</td></tr>",
             label = as_str(s.label()),
             fmla = frr.verify_expr(e),
           )?
         }
       }
-      writeln!(w, "</TABLE></CENTER>")?;
+      writeln!(w, "</table>")?;
     }
     writeln!(
       w,
-      "<CENTER><TABLE BORDER CELLSPACING=0 BGCOLOR=\"{bgcolor}\" SUMMARY=\"Assertion\">\n\
-        <CAPTION><B>Assertion</B></CAPTION>\n\
-        <TR><TH>Ref</TH><TH>Expression</TH></TR>\n\
-        <TR ALIGN=LEFT>\n\
-          <TD><FONT COLOR=\"{title_color}\"><B>{label}</B></FONT></TD>\n\
-          <TD>{expr}</TD>\n\
-        </TR>
-      </TABLE></CENTER>",
-      bgcolor = MINT_BACKGROUND_COLOR,
-      title_color = GREEN_TITLE_COLOR,
+      "<table class=steps>\n\
+        <caption><b>Assertion</b></caption>\n\
+        <tr><th>Ref</th><th>Expression</th></tr>\n\
+        <tr>\n\
+          <td class=title>{label}</td>\n\
+          <td class=math>{expr}</td>\n\
+        </tr>
+      </table>",
       label = s_label,
       expr = frr.verify_expr(&fr.target)
     )?;
@@ -597,19 +582,15 @@ impl<'a> Renderer<'a> {
       dvs.sort_by_cached_key(|cl| cl.iter().map(|&i| names[i]).collect::<Box<[_]>>());
       write!(
         w,
-        "<CENTER><A HREF=\"/mpeuni/mmset.html#distinct\">Distinct variable</A> group{s}: ",
+        "<div style=\"text-align: center\">\
+          <a href=\"/mpeuni/mmset.html#distinct\">Distinct variable</a> group{s}: ",
         s = if dvs.len() == 1 { "" } else { "s" },
       )?;
-      if let Some(html_font) = frr.html_span {
-        write!(w, "<SPAN {}>", html_font)?
-      }
+      write!(w, "<span class=math>")?;
       for cl in dvs {
         write!(w, " &nbsp; {}", cl.iter().map(|&v| frr.html_defs[names[v].as_bytes()]).format(","))?
       }
-      if frr.html_span.is_some() {
-        write!(w, "</SPAN>")?
-      }
-      writeln!(w, "</CENTER>")?;
+      write!(w, "</span></div>")?;
 
       // allowed substitution hints (set.mm specific)
       let mut fovars = vec![];
@@ -660,56 +641,36 @@ impl<'a> Renderer<'a> {
       }
       write!(
         w,
-        "<CENTER><A HREF=\"/mpeuni/mmset.html#allowedsubst\">Allowed substitution</A> hint{s}: ",
+        "<div style=\"text-align: center\">\
+          <a href=\"/mpeuni/mmset.html#allowedsubst\">Allowed substitution</a> hint{s}: ",
         s = if count == 1 { "" } else { "s" },
       )?;
-      if let Some(html_font) = frr.html_span {
-        write!(w, "<SPAN {}>", html_font)?
-      }
-      write!(w, "{}", output)?;
-      if frr.html_span.is_some() {
-        write!(w, "</SPAN>")?
-      }
+      write!(w, "<span class=math>")?;
+      write!(w, "{}</span></div>", output)?;
     }
-    writeln!(w, "<HR NOSHADE SIZE=1>")?;
+    writeln!(w, "<hr />")?;
 
     let mut dummies = (fr.mandatory_count..fr.optional_dv.len())
       .filter(|&i| !fr.optional_dv[i].is_empty())
       .collect::<Vec<_>>();
-    let thm_header = format!(
-      "<B>Proof of Theorem <FONT COLOR=\"{title_color}\">{label}</FONT></B>",
-      title_color = GREEN_TITLE_COLOR,
-      label = s_label,
-    );
-    let table_header = format!(
-      "<CENTER><TABLE BORDER CELLSPACING=0 BGCOLOR=\"{bgcolor}\" SUMMARY=\"Proof of theorem\">",
-      bgcolor = MINT_BACKGROUND_COLOR
-    );
+    let thm_header = format!("<b>Proof of Theorem <span class=title>{}</span></b>", s_label);
     if !dummies.is_empty() {
       dummies.sort_by_key(|&i| names[i]);
-      writeln!(w, "<CENTER>{}</CENTER>\n", thm_header)?;
+      writeln!(w, "<div style=\"text-align: center\">{}</div>\n", thm_header)?;
       writeln!(
         w,
-        "<CENTER><A HREF=\"/mpeuni/mmset.html#dvnote1\">Dummy variable{s}</A> ",
+        "<div style=\"text-align: center\">\
+          <a href=\"/mpeuni/mmset.html#dvnote1\">Dummy variable{s}</a> \
+          <span class=math>{dummies}</span> {is} distinct from all other variables.</div>",
         s = if dummies.len() == 1 { "" } else { "s" },
-      )?;
-      if let Some(html_font) = frr.html_span {
-        write!(w, "<SPAN {}>", html_font)?
-      }
-      write!(w, "{}", dummies.iter().map(|&v| frr.html_defs[names[v].as_bytes()]).format(" "))?;
-      if frr.html_span.is_some() {
-        write!(w, "</SPAN>")?
-      }
-      writeln!(
-        w,
-        " {is} distinct from all other variables.</CENTER>",
+        dummies = dummies.iter().map(|&v| frr.html_defs[names[v].as_bytes()]).format(" "),
         is = if dummies.len() == 1 { "is" } else { "are mutually distinct and" },
       )?;
-      writeln!(w, "{}", table_header)?
+      writeln!(w, "<table class=steps>")?
     } else {
-      writeln!(w, "{}\n<CAPTION>{}</CAPTION>", table_header, thm_header)?;
+      writeln!(w, "<table class=steps>\n<caption>{}</caption>", thm_header)?;
     }
-    writeln!(w, "<TR><TH>Step</TH><TH>Hyp</TH><TH>Ref</TH><TH>Expression</TH></TR>")?;
+    writeln!(w, "<tr><th>Step</th><th>Hyp</th><th>Ref</th><th>Expression</th></tr>")?;
 
     let mut syntax = vec![];
     if let Some(proof) = db.get_proof_tree(stmt) {
@@ -729,31 +690,31 @@ impl<'a> Renderer<'a> {
             .peekable();
           if iter.peek().is_some() {
             let iter =
-              iter.map(|i| DisplayFn(move |f| write!(f, "<A HREF=\"#{i}\">{i}</A>", i = i)));
+              iter.map(|i| DisplayFn(move |f| write!(f, "<a href=\"#{i}\">{i}</A>", i = i)));
             write!(f, "{}", iter.format(", "))
           } else {
             write!(f, "&nbsp;")
           }
         });
 
-        writeln!(w, "<TR ALIGN=LEFT><TD>{}</TD>\n<TD>{}</TD>", step + 1, hyp)?;
+        writeln!(w, "<tr><td>{}</td>\n<td>{}</td>", step + 1, hyp)?;
         if ref_stmt.is_assertion() {
           writeln!(
             w,
-            "<TD><A HREF=\"{ref_label}.html\" TITLE=\"{descr}\">{ref_label}</A>{pink}</TD>",
+            "<td><a href=\"{ref_label}.html\" title=\"{descr}\">{ref_label}</a>{pink}</td>",
             ref_label = as_str(ref_stmt.label()),
             descr = as_str(&abbrev_desc(ref_stmt)).replace("\"", "'"),
             pink = self.pink_num(Some(self.pink_numbers[ref_stmt.label()])),
           )?;
         } else {
-          writeln!(w, "<TD>{}</TD>", as_str(ref_stmt.label()))?;
+          writeln!(w, "<td>{}</td>", as_str(ref_stmt.label()))?;
         }
-        write!(w, "<TD><SPAN CLASS=i>")?;
+        write!(w, "<td class=math><span class=i>")?;
         (0..indent[i]).try_for_each(|_| write!(w, ". "))?;
         writeln!(
           w,
-          "{indent}</SPAN>\n{fmla}</TD></TR>",
-          indent = indent[i],
+          "{indent}</span>\n{fmla}</td></tr>",
+          indent = indent[i] + 1,
           fmla = frr.expr(&ref_stmt.math_at(0), expr)
         )?
       }
@@ -770,42 +731,33 @@ impl<'a> Renderer<'a> {
     } else {
       writeln!(
         w,
-        "<TR ALIGN=LEFT><TD COLSPAN=4><B>\
-            <FONT COLOR=RED>WARNING: Proof has a severe error.</FONT>\
-          </B></TD></TR>"
+        "<tr><td colspan=4 style=\"color: red\"><b>\
+            WARNING: Proof has a severe error.\
+          </b></td></tr>"
       )?
     }
-    writeln!(w, "</TABLE></CENTER>")?;
+    writeln!(w, "</table>")?;
 
-    writeln!(w, "<CENTER><TABLE CELLSPACING=5>")?;
     writeln!(
       w,
-      "<TR><TD ALIGN=LEFT>\
-          <FONT SIZE=-1><B>Colors of variables:</B> {var_color}</FONT>\
-        </TD></TR>",
+      "<table class=bottom-table>\n\
+        <tr><td><b>Colors of variables:</b> {var_color}</td></tr>",
       var_color = self.html_var_color,
     )?;
 
     if !syntax.is_empty() {
       syntax.sort_by_key(|(stmt, _)| self.pink_numbers[stmt]);
-      write!(w, "<TR><TD ALIGN=LEFT><FONT SIZE=-1><B>Syntax hints:</B> ")?;
+      write!(w, "<tr><td><b>Syntax hints:</b> ")?;
       for (label, c) in syntax {
-        write!(w, " &nbsp;")?;
-        if let Some(html_font) = frr.html_span {
-          write!(w, "<SPAN {}>", html_font)?
-        }
-        write!(w, "{}", frr.html_defs[&**c])?;
-        if frr.html_span.is_some() {
-          write!(w, "</SPAN>")?
-        }
         write!(
           w,
-          "<A HREF=\"{label}.html\">{label}</A>{pink}",
+          " &nbsp;<span class=math>{tk}</span><A HREF=\"{label}.html\">{label}</A>{pink}",
+          tk = frr.html_defs[&**c],
           pink = self.pink_num(Some(self.pink_numbers[label])),
           label = as_str(label)
         )?;
       }
-      writeln!(w, "</FONT></TD></TR>")?;
+      writeln!(w, "</td></tr>")?;
     }
 
     let mut usage = self
@@ -837,7 +789,7 @@ impl<'a> Renderer<'a> {
 
     let mut write_list = |header: &str, labels: Vec<&str>| -> io::Result<_> {
       if !labels.is_empty() {
-        writeln!(w, "<TR><TD ALIGN=LEFT><FONT SIZE=-1><B>{}:</B>", header)?;
+        writeln!(w, "<tr><td><b>{}:</b>", header)?;
         for label in labels {
           writeln!(
             w,
@@ -846,7 +798,7 @@ impl<'a> Renderer<'a> {
             pink = self.pink_num(Some(self.pink_numbers[label.as_bytes()])),
           )?
         }
-        writeln!(w, "</FONT></TD></TR>")?;
+        writeln!(w, "</td></tr>")?;
       }
       Ok(())
     };
@@ -857,19 +809,19 @@ impl<'a> Renderer<'a> {
       if matches!(*usage, [stmt] if stmt.label() == label) {
         writeln!(
           w,
-          "<TR><TD ALIGN=left>&nbsp;<B><FONT COLOR=\"#FF6600\">\
-            WARNING: This theorem has an incomplete proof.</FONT></B><BR></TD></TR>"
+          "<tr><td style=\"font-size: normal; color: #FF6600\">&nbsp;<b>\
+            WARNING: This theorem has an incomplete proof.</b><br/></td></tr>"
         )?
       } else {
         writeln!(
           w,
-          "<TR><TD ALIGN=left>&nbsp;<B><FONT COLOR=\"#FF6600\">\
+          "<tr><td style=\"font-size: normal; color: #FF6600\">&nbsp;<b>\
             WARNING: This proof depends on the following unproved theorem(s): "
         )?;
         for stmt in usage {
-          writeln!(w, " <A HREF=\"{label}.html\">{label}</A>", label = as_str(stmt.label()))?
+          writeln!(w, " <a href=\"{label}.html\">{label}</a>", label = as_str(stmt.label()))?
         }
-        writeln!(w, "</B></FONT></TD></TR>")?;
+        writeln!(w, "</b></td></tr>")?;
       }
     }
 
@@ -877,12 +829,12 @@ impl<'a> Renderer<'a> {
       .statements_range_address((Bound::Excluded(stmt.address()), Bound::Unbounded))
       .filter(|s| is_direct_use(s, label))
       .peekable();
-    writeln!(w, "<TR><TD ALIGN=LEFT><FONT SIZE=-1><B>This {} is referenced by:</B>", sub_type.1)?;
+    writeln!(w, "<tr><td><b>This {} is referenced by:</b>", sub_type.1)?;
     if iter.peek().is_some() {
       for label in iter.map(|stmt| stmt.label()) {
         writeln!(
           w,
-          "&nbsp;<A HREF=\"{label}.html\">{label}</A>{pink}",
+          "&nbsp;<a href=\"{label}.html\">{label}</a>{pink}",
           label = as_str(label),
           pink = self.pink_num(Some(self.pink_numbers[label])),
         )?
@@ -890,24 +842,24 @@ impl<'a> Renderer<'a> {
     } else {
       writeln!(w, " (None)")?
     }
-    writeln!(w, "</FONT></TD></TR>")?;
-    writeln!(w, "</TABLE></CENTER>")?;
+    writeln!(w, "</td></tr>")?;
+    writeln!(w, "</table>")?;
 
     writeln!(
       w,
-      "<TABLE BORDER=0 WIDTH=\"100%\"><TR>\n\
-        <TD WIDTH=\"25%\">&nbsp;</TD>\n\
-        <TD ALIGN=CENTER VALIGN=BOTTOM>\n\
-          <FONT SIZE=-2 FACE=sans-serif>\
-            Copyright terms: <A HREF=\"../copyright.html#pd\">Public domain</A>\n\
-          </FONT>\
-        </TD><TD ALIGN=RIGHT VALIGN=BOTTOM WIDTH=\"25%\">\n\
-          <FONT SIZE=-2 FACE=sans-serif>\
-            <A HREF=\"http://validator.w3.org/check?uri=referer\">W3C validator</A>\
-          </FONT>\n\
-        </TD></TR></TABLE>"
+      "<table style=\"border: none; width: 100%\"><tr>\n\
+        <td style=\"width: 25%\">&nbsp;</td>\n\
+        <td style=\"text-align: center; vertical-align: bottom; \
+          font-size: x-small; font-family: sans-serif\">\
+          Copyright terms: <a href=\"../copyright.html#pd\">Public domain</a>\n\
+        </td>\n\
+        <td style=\"text-align: right; vertical-align: bottom; \
+          width: 25%; font-size: x-small; font-family: sans-serif\">\
+          <a href=\"http://validator.w3.org/check?uri=referer\">W3C validator</a>\
+        </td>\n\
+      </tr></table>"
     )?;
-    writeln!(w, "</BODY></HTML>")
+    writeln!(w, "</body></html>")
   }
 }
 
