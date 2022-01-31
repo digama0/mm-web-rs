@@ -650,10 +650,20 @@ impl<'a> Renderer<'a> {
     }
     writeln!(w, "<hr />")?;
 
-    let mut dummies = (fr.mandatory_count..fr.optional_dv.len())
-      .filter(|&i| !fr.optional_dv[i].is_empty())
-      .collect::<Vec<_>>();
     let thm_header = format!("<b>Proof of Theorem <span class=title>{}</span></b>", s_label);
+    let mut dummies =
+      if (fr.mandatory_count..fr.optional_dv.len()).all(|i| fr.optional_dv[i].is_empty()) {
+        vec![]
+      } else {
+        let vars = UseIter::new(stmt)
+          .filter_map(|s| db.scope_result().get(s))
+          .filter(|fr| fr.stype == StatementType::Floating)
+          .map(|fr| fr.var_list[0])
+          .collect::<HashSet<_>>();
+        (fr.mandatory_count..fr.optional_dv.len())
+          .filter(|&i| !fr.optional_dv[i].is_empty() && vars.contains(&fr.var_list[i]))
+          .collect::<Vec<_>>()
+      };
     if !dummies.is_empty() {
       dummies.sort_by_key(|&i| names[i]);
       writeln!(w, "<div style=\"text-align: center\">{}</div>\n", thm_header)?;
@@ -933,6 +943,39 @@ impl<'a> CalcOrder<'a> {
   }
 }
 
+struct UseIter<'a> {
+  stmt: StatementRef<'a>,
+  i: i32,
+  len: i32,
+}
+
+impl<'a> UseIter<'a> {
+  fn new(stmt: StatementRef<'a>) -> Self {
+    let len = stmt.proof_len();
+    if len != 0 && stmt.proof_slice_at(0) == b"(" {
+      Self { stmt, i: 1, len }
+    } else {
+      Self { stmt, i: 0, len }
+    }
+  }
+}
+
+impl<'a> Iterator for UseIter<'a> {
+  type Item = &'a [u8];
+
+  fn next(&mut self) -> Option<Self::Item> {
+    if self.i >= self.len {
+      return None
+    }
+    let ref_stmt = self.stmt.proof_slice_at(self.i);
+    if ref_stmt == b")" {
+      return None
+    }
+    self.i += 1;
+    Some(ref_stmt)
+  }
+}
+
 #[derive(Default)]
 struct TraceUsage<'a>(HashMap<&'a [u8], HashSet<&'a [u8]>>);
 
@@ -950,20 +993,12 @@ impl<'a> TraceUsage<'a> {
         StatementType::Provable => {}
         _ => return Some(out),
       }
-      let len = stmt.proof_len();
-      if len == 0 || stmt.proof_slice_at(0) != b"(" {
-        return None
-      }
-      for i in 1..len {
-        let ref_stmt = stmt.proof_slice_at(i);
-        if ref_stmt == b")" {
-          return Some(out)
-        }
+      for ref_stmt in UseIter::new(stmt) {
         for &ax in self.get(db, ref_stmt) {
           out.insert(ax);
         }
       }
-      None
+      Some(out)
     })()
     .unwrap_or_else(|| [label].into_iter().collect());
     self.0.entry(label).or_insert(out)
