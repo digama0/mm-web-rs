@@ -2,9 +2,9 @@ use itertools::Itertools;
 use metamath_knife::{
   comment_parser::{CommentItem, CommentParser},
   nameck::{Atom, Nameset},
-  parser::{as_str, Span, StatementRef, StatementType},
   proof::ProofTreeArray,
   scopeck::{Frame, Hyp, VerifyExpr},
+  statement::StatementAddress,
   *,
 };
 use std::{
@@ -22,6 +22,7 @@ const MINT_BACKGROUND_COLOR: &str = "#EEFFFA";
 pub(crate) struct Renderer<'a> {
   db: &'a Database,
   pink_numbers: HashMap<&'a [u8], usize>,
+  mathbox_addr: Option<StatementAddress>,
   // latex_defs: HashMap<&'a [u8], &'a str>,
   html_defs: HashMap<&'a [u8], &'a str>,
   alt_html_defs: HashMap<&'a [u8], &'a str>,
@@ -56,46 +57,47 @@ impl<'a> Renderer<'a> {
       .map(|(i, l)| (l.label(), i))
       .collect();
     let ts = &**db.typesetting_result();
-    let html_title = ts.html_title.as_deref().map_or("Metamath Test Page", as_str);
-    let html_home = ts.html_home.as_deref().map_or(
+    let html_title = ts.html_title.as_ref().map_or("Metamath Test Page", |s| as_str(&s.1));
+    let html_home = ts.html_home.as_ref().map_or(
       "<A HREF=\"mmset.html\"><FONT SIZE=-2 FACE=sans-serif>\
         <IMG SRC=\"mm.gif\" BORDER=0 ALT=\"Home\"\
           HEIGHT=32 WIDTH=32 ALIGN=MIDDLE STYLE=\"margin-bottom:0px\">Home</FONT></A>",
-      as_str,
+      |s| as_str(&s.1),
     );
     let names = db.name_result();
     let get_tc = |arr: &[&[u8]]| arr.iter().map(|v| names.lookup_symbol(v).unwrap().atom).collect();
     Self {
       db,
       pink_numbers,
+      mathbox_addr: names.lookup_label(b"mathbox").map(|l| l.address),
       // latex_defs: ts.latex_defs.iter().map(|(x, y)| (&**x, as_str(y))).collect(),
-      html_defs: ts.html_defs.iter().map(|(x, y)| (&**x, as_str(y))).collect(),
-      alt_html_defs: ts.alt_html_defs.iter().map(|(x, y)| (&**x, as_str(y))).collect(),
-      html_var_color: Itertools::intersperse(ts.html_var_color.iter().map(|s| as_str(s)), " ")
+      html_defs: ts.html_defs.iter().map(|(x, y)| (&**x, as_str(&y.2))).collect(),
+      alt_html_defs: ts.alt_html_defs.iter().map(|(x, y)| (&**x, as_str(&y.2))).collect(),
+      html_var_color: Itertools::intersperse(ts.html_var_color.iter().map(|s| as_str(&s.1)), " ")
         .collect::<String>(),
       html_title,
       // html_home,
-      html_dir: ts.html_dir.as_deref().map_or("", as_str),
-      alt_html_dir: ts.alt_html_dir.as_deref().map_or("", as_str),
-      html_bibliography: ts.html_bibliography.as_deref().map_or("", as_str),
+      html_dir: ts.html_dir.as_ref().map_or("", |s| as_str(&s.1)),
+      alt_html_dir: ts.alt_html_dir.as_ref().map_or("", |s| as_str(&s.1)),
+      html_bibliography: ts.html_bibliography.as_ref().map_or("", |s| as_str(&s.1)),
       html_css: ts
         .html_css
-        .as_deref()
-        .map_or("", as_str)
+        .as_ref()
+        .map_or("", |s| as_str(&s.1))
         .replace("\\n", "\n")
         .replace("STYLE TYPE=\"text/css\"", "style"),
-      html_font: ts.html_font.as_deref().map_or("", as_str),
-      // ext_html_label: ts.ext_html_label.as_deref().map_or("", as_str),
-      // ext_html_title: ts.ext_html_title.as_deref().map_or("", as_str),
-      // ext_html_home: ts.ext_html_home.as_deref().map_or("", as_str),
-      ext_html_bibliography: ts.ext_html_bibliography.as_deref().map_or("", as_str),
-      html_ext_url: ts.html_ext_url.as_deref().map_or("", as_str),
+      html_font: ts.html_font.as_ref().map_or("", |s| as_str(&s.1)),
+      // ext_html_label: ts.ext_html_label.as_ref().map_or("", |s| as_str(&s.1)),
+      // ext_html_title: ts.ext_html_title.as_ref().map_or("", |s| as_str(&s.1)),
+      // ext_html_home: ts.ext_html_home.as_ref().map_or("", |s| as_str(&s.1)),
+      ext_html_bibliography: ts.ext_html_bibliography.as_ref().map_or("", |s| as_str(&s.1)),
+      html_ext_url: ts.html_ext_url.as_ref().map_or("", |s| as_str(&s.1)),
       title_abbr: format!(
         "{} Home",
         html_title.matches(|c: char| c.is_ascii_uppercase()).collect::<String>()
       ),
-      home_href: html_home.split_once("HREF=\"").unwrap().1.split_once("\"").unwrap().0,
-      home_img: html_home.split_once("IMG SRC=\"").unwrap().1.split_once("\"").unwrap().0,
+      home_href: html_home.split_once("HREF=\"").unwrap().1.split_once('\"').unwrap().0,
+      home_img: html_home.split_once("IMG SRC=\"").unwrap().1.split_once('\"').unwrap().0,
       first_order_tc: get_tc(&[b"setvar"]),
       second_order_tc: get_tc(&[b"wff", b"class"]),
       syntax_hint: db
@@ -291,7 +293,7 @@ impl Display for Comment<'_, '_> {
           if htmls == 0 {
             write!(f, "{}", s)?
           } else {
-            write!(f, "{}", s.replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;"))?
+            write!(f, "{}", s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;"))?
           }
         }
         CommentItem::LineBreak(_) => {
@@ -397,7 +399,7 @@ impl Display for ExprHtml<'_> {
 impl<'a> Renderer<'a> {
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn show_statement(
-    &self, w: &mut impl Write, stmt: StatementRef<'a>, alt: bool, in_mbox: bool,
+    &self, w: &mut impl Write, stmt: StatementRef<'a>, alt: bool,
   ) -> io::Result<()> {
     let db = self.db;
     let css = &*self.html_css;
@@ -407,6 +409,8 @@ impl<'a> Renderer<'a> {
     let home_img = self.home_img;
     let html_ext_url = self.html_ext_url;
     let other_dir = if alt { self.html_dir } else { self.alt_html_dir };
+    let in_mbox = (self.mathbox_addr.as_ref())
+      .map_or(false, |addr| db.cmp_address(addr, &stmt.address()).is_le());
 
     let sub_type = match stmt.statement_type() {
       StatementType::Provable => ("Theorem", "theorem"),
@@ -527,7 +531,7 @@ impl<'a> Renderer<'a> {
       } else {
         ""
       },
-      html_ext_url = html_ext_url.replace("*", s_label),
+      html_ext_url = html_ext_url.replace('*', s_label),
       other_name = if alt { "GIF" } else { "Unicode" },
       other_dir = other_dir,
       sub_type = sub_type.0,
@@ -689,7 +693,7 @@ impl<'a> Renderer<'a> {
       let indent = proof.indent();
       for (step, &i) in order.order.iter().enumerate() {
         let tree = &proof.trees[i];
-        let expr = &*proof.exprs[i];
+        let expr = &proof.exprs().unwrap()[i];
         let ref_stmt = db.statement_by_address(tree.address);
         let hyp = DisplayFn(|f| {
           let mut iter = tree
@@ -713,7 +717,7 @@ impl<'a> Renderer<'a> {
             w,
             "<td><a href=\"{ref_label}.html\" title=\"{descr}\">{ref_label}</a>{pink}</td>",
             ref_label = as_str(ref_stmt.label()),
-            descr = as_str(&abbrev_desc(ref_stmt)).replace("\"", "'"),
+            descr = as_str(&abbrev_desc(ref_stmt)).replace('\"', "'"),
             pink = self.pink_num(Some(self.pink_numbers[ref_stmt.label()])),
           )?;
         } else {
