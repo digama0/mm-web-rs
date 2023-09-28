@@ -7,16 +7,21 @@ use std::{fs::File, time::Instant};
 
 fn main() {
   let mut iter = std::env::args().skip(1);
+  let file = iter.next().unwrap();
   let label = match iter.next().as_deref() {
     Some("write") => {
-      let arg = iter.next().unwrap();
-      Some(if arg == "--gif" { (false, iter.next().unwrap()) } else { (false, arg) })
+      let alt = match &*iter.next().unwrap() {
+        "gif" => false,
+        "uni" => true,
+        _ => panic!("expected 'gif' or 'uni'"),
+      };
+      Some((alt, iter.next().unwrap()))
     }
     Some("server") => None,
-    _ => panic!("use 'mm-web-rs write LABEL' or 'mm-web-rs server'"),
+    _ => panic!("use 'mm-web-rs <DB> write <gif|uni> <LABEL|*>' or 'mm-web-rs <DB> server'"),
   };
   let mut db = Database::default();
-  db.parse("../mm/set.mm".into(), vec![]);
+  db.parse(file, vec![]);
   db.scope_pass();
   db.typesetting_pass();
   let mut renderer = Renderer::new(&db);
