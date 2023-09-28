@@ -2,6 +2,7 @@ use itertools::Itertools;
 use metamath_knife::{
   comment_parser::{CommentItem, CommentParser},
   nameck::{Atom, Nameset},
+  parser::HeadingLevel,
   proof::ProofTreeArray,
   scopeck::{Frame, Hyp, VerifyExpr},
   statement::StatementAddress,
@@ -23,25 +24,27 @@ pub(crate) struct Renderer<'a> {
   db: &'a Database,
   pink_numbers: HashMap<&'a [u8], usize>,
   mathbox_addr: Option<StatementAddress>,
+  mathbox_lookup: Option<Vec<(StatementAddress, &'a str)>>,
   // latex_defs: HashMap<&'a [u8], &'a str>,
   html_defs: HashMap<&'a [u8], &'a str>,
   alt_html_defs: HashMap<&'a [u8], &'a str>,
   html_var_color: String,
   html_title: &'a str,
-  // html_home: &'a str,
+  html_title_abbr: String,
+  html_home_href: &'a str,
+  html_home_img: &'a str,
   html_dir: &'a str,
   alt_html_dir: &'a str,
   html_bibliography: &'a str,
   html_css: String,
   html_font: &'a str,
-  // ext_html_label: &'a str,
-  // ext_html_title: &'a str,
-  // ext_html_home: &'a str,
+  ext_html_addr: Option<StatementAddress>,
+  ext_html_title: &'a str,
+  ext_html_title_abbr: String,
+  ext_html_home_href: &'a str,
+  ext_html_home_img: &'a str,
   ext_html_bibliography: &'a str,
   html_ext_url: &'a str,
-  title_abbr: String,
-  home_href: &'a str,
-  home_img: &'a str,
   first_order_tc: Vec<Atom>,
   second_order_tc: Vec<Atom>,
   syntax_hint: HashMap<&'a [u8], Box<[u8]>>,
@@ -66,17 +69,28 @@ impl<'a> Renderer<'a> {
     );
     let names = db.name_result();
     let get_tc = |arr: &[&[u8]]| arr.iter().map(|v| names.lookup_symbol(v).unwrap().atom).collect();
+    let mathbox_addr = names.lookup_label(b"mathbox").map(|l| l.address);
+    let ext_html_title = ts.ext_html_title.as_ref().map_or("", |s| as_str(&s.1));
+    let ext_html_home = ts.ext_html_home.as_ref().map_or("", |s| as_str(&s.1));
+    let ext_html_home_href =
+      ext_html_home.split_once("HREF=\"").unwrap().1.split_once('\"').unwrap().0;
+    let ext_html_home_img =
+      ext_html_home.split_once("IMG SRC=\"").unwrap().1.split_once('\"').unwrap().0;
     Self {
       db,
       pink_numbers,
-      mathbox_addr: names.lookup_label(b"mathbox").map(|l| l.address),
+      mathbox_addr,
+      mathbox_lookup: None,
       // latex_defs: ts.latex_defs.iter().map(|(x, y)| (&**x, as_str(y))).collect(),
       html_defs: ts.html_defs.iter().map(|(x, y)| (&**x, as_str(&y.2))).collect(),
       alt_html_defs: ts.alt_html_defs.iter().map(|(x, y)| (&**x, as_str(&y.2))).collect(),
       html_var_color: Itertools::intersperse(ts.html_var_color.iter().map(|s| as_str(&s.1)), " ")
         .collect::<String>(),
       html_title,
-      // html_home,
+      html_title_abbr: format!(
+        "{} Home",
+        html_title.matches(|c: char| c.is_ascii_uppercase()).collect::<String>()
+      ),
       html_dir: ts.html_dir.as_ref().map_or("", |s| as_str(&s.1)),
       alt_html_dir: ts.alt_html_dir.as_ref().map_or("", |s| as_str(&s.1)),
       html_bibliography: ts.html_bibliography.as_ref().map_or("", |s| as_str(&s.1)),
@@ -87,17 +101,22 @@ impl<'a> Renderer<'a> {
         .replace("\\n", "\n")
         .replace("STYLE TYPE=\"text/css\"", "style"),
       html_font: ts.html_font.as_ref().map_or("", |s| as_str(&s.1)),
-      // ext_html_label: ts.ext_html_label.as_ref().map_or("", |s| as_str(&s.1)),
-      // ext_html_title: ts.ext_html_title.as_ref().map_or("", |s| as_str(&s.1)),
-      // ext_html_home: ts.ext_html_home.as_ref().map_or("", |s| as_str(&s.1)),
-      ext_html_bibliography: ts.ext_html_bibliography.as_ref().map_or("", |s| as_str(&s.1)),
-      html_ext_url: ts.html_ext_url.as_ref().map_or("", |s| as_str(&s.1)),
-      title_abbr: format!(
+      ext_html_addr: ts
+        .ext_html_label
+        .as_ref()
+        .and_then(|s| names.lookup_label(&s.1))
+        .map(|l| l.address),
+      ext_html_title,
+      ext_html_title_abbr: format!(
         "{} Home",
         html_title.matches(|c: char| c.is_ascii_uppercase()).collect::<String>()
       ),
-      home_href: html_home.split_once("HREF=\"").unwrap().1.split_once('\"').unwrap().0,
-      home_img: html_home.split_once("IMG SRC=\"").unwrap().1.split_once('\"').unwrap().0,
+      ext_html_home_href,
+      ext_html_home_img,
+      ext_html_bibliography: ts.ext_html_bibliography.as_ref().map_or("", |s| as_str(&s.1)),
+      html_ext_url: ts.html_ext_url.as_ref().map_or("", |s| as_str(&s.1)),
+      html_home_href: html_home.split_once("HREF=\"").unwrap().1.split_once('\"').unwrap().0,
+      html_home_img: html_home.split_once("IMG SRC=\"").unwrap().1.split_once('\"').unwrap().0,
       first_order_tc: get_tc(&[b"setvar"]),
       second_order_tc: get_tc(&[b"wff", b"class"]),
       syntax_hint: db
@@ -120,6 +139,49 @@ impl<'a> Renderer<'a> {
         .collect(),
       trace_usage: Default::default(),
     }
+  }
+
+  pub(crate) fn prep_mathbox_lookup(&mut self) {
+    if let Some(addr) = self.mathbox_addr {
+      if self.mathbox_lookup.is_some() {
+        return
+      }
+      let mut headers = vec![];
+      for stmt in self.db.statements_range_address(addr..) {
+        let StatementType::HeadingComment(HeadingLevel::Section) = stmt.statement_type() else {
+          continue
+        };
+        let Some(hc) = stmt.as_heading_comment() else { continue };
+        let buf = &**stmt.segment().segment.buffer;
+        if hc.parse_mathbox_header(buf).is_some() {
+          headers.push((stmt.address(), as_str(hc.header.as_ref(buf))))
+        }
+      }
+      self.mathbox_lookup = Some(headers)
+    }
+  }
+
+  fn mathbox_lookup(&self, stmt: &StatementRef<'_>) -> Option<Option<&'a str>> {
+    let mbox_addr = self.mathbox_addr?;
+    let addr = stmt.address();
+    if self.db.cmp_address(&addr, &mbox_addr).is_lt() {
+      return None
+    }
+    Some(match &self.mathbox_lookup {
+      Some(mbs) => mbs
+        .partition_point(|x| self.db.cmp_address(&x.0, &addr).is_le())
+        .checked_sub(1)
+        .map(|i| mbs[i].1),
+      None => self.db.statements_range_address(mbox_addr..=addr).rev().find_map(|stmt| {
+        let StatementType::HeadingComment(HeadingLevel::Section) = stmt.statement_type() else {
+          return None
+        };
+        let hc = stmt.as_heading_comment()?;
+        let buf = &**stmt.segment().segment.buffer;
+        hc.parse_mathbox_header(buf)?;
+        Some(as_str(hc.header.as_ref(buf)))
+      }),
+    })
   }
 }
 
@@ -166,7 +228,7 @@ impl Renderer<'_> {
         let i = position as usize;
         assert!(i < PARTITIONS);
         let fraction = position - i as f64;
-        write!(f, "&nbsp;<SPAN CLASS=r STYLE=\"color:#")?;
+        write!(f, "&nbsp;<span class=r style=\"color:#")?;
         for d in 0..3 {
           write!(
             f,
@@ -175,9 +237,9 @@ impl Renderer<'_> {
               .round() as u8
           )?;
         }
-        write!(f, "\">{}</SPAN>", n + 1)
+        write!(f, "\">{}</span>", n + 1)
       } else {
-        write!(f, "&nbsp;<SPAN CLASS=r STYLE=\"color:#000000\">(future)</SPAN>")
+        write!(f, "&nbsp;<span class=r style=\"color:#000000\">(future)</span>")
       }
     })
   }
@@ -298,7 +360,7 @@ impl Display for Comment<'_, '_> {
         }
         CommentItem::LineBreak(_) => {
           trim_prev_ws = true;
-          write!(f, "<P STYLE=\"margin-bottom:0em\">")?
+          write!(f, "<p style=\"margin-bottom:0em\">")?
         }
         CommentItem::StartMathMode(_) => write!(f, "<span {}>", self.r.html_font)?,
         CommentItem::EndMathMode(_) => {
@@ -307,16 +369,16 @@ impl Display for Comment<'_, '_> {
         }
         CommentItem::MathToken(sp) => {
           out.clear();
-          parser.unescape_text(sp, &mut out);
+          parser.unescape_math(sp, &mut out);
           write!(f, "{}", self.html_defs[&*out])?
         }
         CommentItem::Label(_, sp) => {
           trim_prev_ws = true;
           out.clear();
-          parser.unescape_text(sp, &mut out);
+          parser.unescape_label(sp, &mut out);
           write!(
             f,
-            "<A HREF=\"{label}.html\">{label}</A>{pink}",
+            "<a href=\"{label}.html\">{label}</a>{pink}",
             label = as_str(&out),
             pink = self.r.pink_num(Some(self.r.pink_numbers[&*out])),
           )?
@@ -324,23 +386,23 @@ impl Display for Comment<'_, '_> {
         CommentItem::Url(_, sp) => {
           trim_prev_ws = true;
           out.clear();
-          parser.unescape_text(sp, &mut out);
-          write!(f, "<A HREF=\"{url}\">{url}</A>", url = as_str(&out))?
+          parser.unescape_label(sp, &mut out);
+          write!(f, "<a href=\"{url}\">{url}</a>", url = as_str(&out))?
         }
         CommentItem::StartHtml(_) => htmls += 1,
         CommentItem::EndHtml(_) => htmls -= 1,
-        CommentItem::StartSubscript(_) => write!(f, "<SUB><FONT SIZE=\"-1\">")?,
-        CommentItem::EndSubscript(_) => write!(f, "</FONT></SUB>")?,
-        CommentItem::StartItalic(_) => write!(f, "<I>")?,
+        CommentItem::StartSubscript(_) => write!(f, "<sub><font size=\"-1\">")?,
+        CommentItem::EndSubscript(_) => write!(f, "</font></sub>")?,
+        CommentItem::StartItalic(_) => write!(f, "<i>")?,
         CommentItem::EndItalic(_) => {
           trim_prev_ws = true;
-          write!(f, "</I>")?
+          write!(f, "</i>")?
         }
         CommentItem::BibTag(sp) => {
           trim_prev_ws = false;
           write!(
             f,
-            "[<A HREF=\"{file}#{tag}\">{tag}</A>]",
+            "[<a href=\"{file}#{tag}\">{tag}</a>]",
             file = self.html_bibliography,
             tag = as_str(sp.as_ref(self.buf))
           )?
@@ -403,14 +465,24 @@ impl<'a> Renderer<'a> {
   ) -> io::Result<()> {
     let db = self.db;
     let css = &*self.html_css;
-    let title = self.html_title;
-    let title_abbr = &*self.title_abbr;
-    let home_href = self.home_href;
-    let home_img = self.home_img;
+    let ext = (self.ext_html_addr.as_ref())
+      .map_or(false, |addr| db.cmp_address(addr, &stmt.address()).is_le());
+    let mboxness = self.mathbox_lookup(&stmt);
+    let (title_abbr, home_href, home_img) = if mboxness.is_some() {
+      ("Users' Mathboxes", "mmtheorems.html#sandbox:bighdr", "_sandbox.gif")
+    } else if ext {
+      (&*self.ext_html_title_abbr, self.ext_html_home_href, self.ext_html_home_img)
+    } else {
+      (&*self.html_title_abbr, self.html_home_href, self.html_home_img)
+    };
     let html_ext_url = self.html_ext_url;
     let other_dir = if alt { self.html_dir } else { self.alt_html_dir };
-    let in_mbox = (self.mathbox_addr.as_ref())
-      .map_or(false, |addr| db.cmp_address(addr, &stmt.address()).is_le());
+    let title = match mboxness {
+      Some(None) => "Users' Mathboxes",
+      Some(Some(header)) => header,
+      None if ext => self.ext_html_title,
+      None => self.html_title,
+    };
 
     let sub_type = match stmt.statement_type() {
       StatementType::Provable => ("Theorem", "theorem"),
@@ -419,8 +491,12 @@ impl<'a> Renderer<'a> {
     let label = stmt.label();
     let s_label = as_str(label);
     let seg = stmt.segment().segment;
-    let comment =
-      self.comment(&seg.buffer, stmt.associated_comment().unwrap().comment_contents(), alt, false);
+    let comment = self.comment(
+      &seg.buffer,
+      stmt.associated_comment().unwrap().comment_contents(),
+      alt,
+      ext && mboxness.is_none(),
+    );
 
     let cur = db.name_result().lookup_label(label).unwrap().address;
     let (prev, wrap_prev) = match db.statements_range_address(..cur).rfind(|s| s.is_assertion()) {
@@ -471,7 +547,7 @@ impl<'a> Renderer<'a> {
           <tr>\n\
             <td style=\"padding: 0; text-align: left; vertical-align: top; width: 25%\">\n\
               <a href=\"{home_href}\">\n\
-                <img src=\"http://us.metamath.org/mpeuni/{home_img}\" alt=\"{title_abbr}\" title=\"{title_abbr}\" \
+                <img src=\"{home_img}\" alt=\"{title_abbr}\" title=\"{title_abbr}\" \
                   height=32 width=32 style=\"vertical-align: top; margin-bottom: 0px\">\n\
               </a>\n\
             </td>\n\
@@ -492,8 +568,7 @@ impl<'a> Renderer<'a> {
               <a href=\"../index.html\">Home</a>&nbsp; &gt; &nbsp;\
               <a href=\"{home_href}\">{title_abbr}</a>&nbsp; &gt; &nbsp;\
               <a href=\"mmtheorems.html\">Th. List</a>&nbsp; &gt; &nbsp;\
-              {mbox}\
-              {label}\
+              {mbox}{label}\
             </td>\n\
             <td style=\"padding: 0; text-align: right\" colspan=2>\
               {html_ext_url}\
@@ -526,7 +601,7 @@ impl<'a> Renderer<'a> {
       next = as_str(next.label()),
       next_text = if wrap_next { "Wrap" } else { "Next" },
       page = self.pink_numbers[stmt.label()] / 100 + 1,
-      mbox = if in_mbox {
+      mbox = if mboxness.is_some() {
         "<a href=\"mmtheorems.html#sandbox:bighdr\">Mathboxes</a>&nbsp; &gt; &nbsp;"
       } else {
         ""

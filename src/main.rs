@@ -19,10 +19,11 @@ fn main() {
   db.parse("../mm/set.mm".into(), vec![]);
   db.scope_pass();
   db.typesetting_pass();
-  let renderer = Renderer::new(&db);
+  let mut renderer = Renderer::new(&db);
 
   if let Some((alt, label)) = label {
     if label == "*" {
+      renderer.prep_mathbox_lookup();
       // FIXME: this seems wasteful, should the db expose a par_iter interface?
       db.statements().collect::<Vec<_>>().par_iter().for_each(|&stmt| {
         let start = Instant::now();
@@ -42,17 +43,20 @@ fn main() {
     panic!("re-compile with 'server' feature enabled");
 
     #[cfg(feature = "server")]
-    actix_web::rt::System::new("server")
-      .block_on(async move {
-        println!("starting server, open http://localhost:8080/");
-        actix_web::HttpServer::new(|| {
-          actix_web::App::new().service(render_thm_mpeuni).service(render_thm_mpegif)
+    {
+      renderer.prep_mathbox_lookup();
+      actix_web::rt::System::new("server")
+        .block_on(async move {
+          println!("starting server, open http://localhost:8080/");
+          actix_web::HttpServer::new(|| {
+            actix_web::App::new().service(render_thm_mpeuni).service(render_thm_mpegif)
+          })
+          .bind("localhost:8080")?
+          .run()
+          .await
         })
-        .bind("localhost:8080")?
-        .run()
-        .await
-      })
-      .unwrap()
+        .unwrap()
+    }
   }
 }
 
