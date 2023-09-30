@@ -1,7 +1,7 @@
 use itertools::Itertools;
 use metamath_knife::{
   comment_parser::{CommentItem, CommentParser},
-  nameck::{Atom, Nameset},
+  nameck::{Atom, NameReader, Nameset},
   parser::HeadingLevel,
   proof::ProofTreeArray,
   scopeck::{Frame, Hyp, VerifyExpr},
@@ -71,11 +71,13 @@ impl<'a> Renderer<'a> {
     let get_tc = |arr: &[&[u8]]| arr.iter().map(|v| names.lookup_symbol(v).unwrap().atom).collect();
     let mathbox_addr = names.lookup_label(b"mathbox").map(|l| l.address);
     let ext_html_title = ts.ext_html_title.as_ref().map_or("", |s| as_str(&s.1));
-    let ext_html_home = ts.ext_html_home.as_ref().map_or("", |s| as_str(&s.1));
-    let ext_html_home_href =
-      ext_html_home.split_once("HREF=\"").unwrap().1.split_once('\"').unwrap().0;
-    let ext_html_home_img =
-      ext_html_home.split_once("IMG SRC=\"").unwrap().1.split_once('\"').unwrap().0;
+    let ext_html_home = ts.ext_html_home.as_ref().map(|s| as_str(&s.1));
+    let ext_html_home_href = ext_html_home
+      .and_then(|s| Some(s.split_once("HREF=\"")?.1.split_once('\"')?.0))
+      .unwrap_or_default();
+    let ext_html_home_img = ext_html_home
+      .and_then(|s| Some(s.split_once("IMG SRC=\"")?.1.split_once('\"')?.0))
+      .unwrap_or_default();
     Self {
       db,
       pink_numbers,
@@ -88,8 +90,8 @@ impl<'a> Renderer<'a> {
         .collect::<String>(),
       html_title,
       html_title_abbr: format!(
-        "{} Home",
-        html_title.matches(|c: char| c.is_ascii_uppercase()).collect::<String>()
+        "{abbr} Home",
+        abbr = html_title.matches(|c: char| c.is_ascii_uppercase()).collect::<String>()
       ),
       html_dir: ts.html_dir.as_ref().map_or("", |s| as_str(&s.1)),
       alt_html_dir: ts.alt_html_dir.as_ref().map_or("", |s| as_str(&s.1)),
@@ -108,8 +110,8 @@ impl<'a> Renderer<'a> {
         .map(|l| l.address),
       ext_html_title,
       ext_html_title_abbr: format!(
-        "{} Home",
-        html_title.matches(|c: char| c.is_ascii_uppercase()).collect::<String>()
+        "{abbr} Home",
+        abbr = html_title.matches(|c: char| c.is_ascii_uppercase()).collect::<String>()
       ),
       ext_html_home_href,
       ext_html_home_img,
@@ -237,7 +239,7 @@ impl Renderer<'_> {
               .round() as u8
           )?;
         }
-        write!(f, "\">{}</span>", n + 1)
+        write!(f, "\">{n}</span>", n = n + 1)
       } else {
         write!(f, "&nbsp;<span class=r style=\"color:#000000\">(future)</span>")
       }
@@ -353,7 +355,7 @@ impl Display for Comment<'_, '_> {
             }
           }
           if htmls == 0 {
-            write!(f, "{}", s)?
+            write!(f, "{s}")?
           } else {
             write!(f, "{}", s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;"))?
           }
@@ -460,8 +462,8 @@ impl Display for ExprHtml<'_> {
 
 impl<'a> Renderer<'a> {
   #[allow(clippy::too_many_arguments)]
-  pub(crate) fn show_statement(
-    &self, w: &mut impl Write, stmt: StatementRef<'a>, alt: bool,
+  pub(crate) fn show_statement<W: Write>(
+    &self, w: &mut W, stmt: StatementRef<'a>, alt: bool,
   ) -> io::Result<()> {
     let db = self.db;
     let css = &*self.html_css;
@@ -484,9 +486,25 @@ impl<'a> Renderer<'a> {
       None => self.html_title,
     };
 
+    enum SubType {
+      Syntax,
+      Definition,
+      Axiom,
+      Theorem,
+    }
+    let is_prov = *stmt.math_at(0) == *b"|-";
     let sub_type = match stmt.statement_type() {
-      StatementType::Provable => ("Theorem", "theorem"),
-      _ => unimplemented!(),
+      StatementType::Provable => SubType::Theorem,
+      StatementType::Axiom if !is_prov => SubType::Syntax,
+      StatementType::Axiom if stmt.label().starts_with(b"ax-") => SubType::Axiom,
+      StatementType::Axiom => SubType::Definition,
+      _ => unreachable!(),
+    };
+    let (sub_type_upper, sub_type_lower) = match sub_type {
+      SubType::Syntax => ("Syntax Definition", "syntax"),
+      SubType::Definition => ("Definition", "definition"),
+      SubType::Axiom => ("Axiom", "axiom"),
+      SubType::Theorem => ("Theorem", "theorem"),
     };
     let label = stmt.label();
     let s_label = as_str(label);
@@ -498,7 +516,7 @@ impl<'a> Renderer<'a> {
       ext && mboxness.is_none(),
     );
 
-    let cur = db.name_result().lookup_label(label).unwrap().address;
+    let cur = stmt.address();
     let (prev, wrap_prev) = match db.statements_range_address(..cur).rfind(|s| s.is_assertion()) {
       Some(prev) => (prev, false),
       None => (db.statements().rfind(|s| s.is_assertion()).unwrap(), true),
@@ -609,14 +627,18 @@ impl<'a> Renderer<'a> {
       html_ext_url = html_ext_url.replace('*', s_label),
       other_name = if alt { "GIF" } else { "Unicode" },
       other_dir = other_dir,
-      sub_type = sub_type.0,
+      sub_type = sub_type_upper,
       pink_html = self.pink_num(Some(self.pink_numbers[stmt.label()])),
       comment = comment,
     )?;
 
-    let fr = db.scope_result().get(stmt.label()).unwrap();
+    let scope = db.scope_result();
+    let fr = scope.get(stmt.label()).unwrap();
     let frr = self.frame_renderer(alt, fr);
-    let num_hyps = fr.hypotheses.iter().filter(|h| matches!(h, Hyp::Essential(..))).count();
+    let num_hyps = match sub_type {
+      SubType::Syntax => fr.hypotheses.len(),
+      _ => fr.hypotheses.iter().filter(|h| matches!(h, Hyp::Essential(..))).count(),
+    };
     if num_hyps != 0 {
       writeln!(
         w,
@@ -626,14 +648,27 @@ impl<'a> Renderer<'a> {
         es = if num_hyps == 1 { "is" } else { "es" },
       )?;
       for hyp in &*fr.hypotheses {
-        if let Hyp::Essential(s, ref e) = *hyp {
-          let s = db.statement_by_address(s);
-          writeln!(
-            w,
-            "<tr><td>{label}</td><td class=math>{fmla}</td></tr>",
-            label = as_str(s.label()),
-            fmla = frr.verify_expr(e),
-          )?
+        match (&sub_type, hyp) {
+          (_, &Hyp::Essential(s, ref e)) => {
+            let s = db.statement_by_address(s);
+            writeln!(
+              w,
+              "<tr><td>{label}</td><td class=math>{fmla}</td></tr>",
+              label = as_str(s.label()),
+              fmla = frr.verify_expr(e),
+            )?
+          }
+          (SubType::Syntax, &Hyp::Floating(s, ..)) => {
+            let s = db.statement_by_address(s);
+            writeln!(
+              w,
+              "<tr><td>{label}</td><td class=math><span class=math>{tc}{var}</span></td></tr>",
+              label = as_str(s.label()),
+              tc = frr.html_defs[&*s.math_at(0)],
+              var = frr.html_defs[&*s.math_at(1)],
+            )?
+          }
+          _ => {}
         }
       }
       writeln!(w, "</table>")?;
@@ -672,167 +707,233 @@ impl<'a> Renderer<'a> {
       write!(w, "</span></div>")?;
 
       // allowed substitution hints (set.mm specific)
-      let mut fovars = vec![];
-      let mut sovars = vec![];
-      for hyp in &*fr.hypotheses {
-        if let Hyp::Floating(_, i, atom) = *hyp {
-          if self.first_order_tc.contains(&atom) {
-            fovars.push((i, true))
-          }
-          if self.second_order_tc.contains(&atom) {
-            sovars.push(i)
-          }
-        }
-      }
-      fovars.sort_unstable_by_key(|&(i, _)| names[i]);
-      sovars.sort_unstable_by_key(|&i| names[i]);
-      let mut count = 0;
-      let mut output = String::new();
-      for v in sovars {
-        fovars.iter_mut().for_each(|p| p.1 = true);
-        for &(a, b) in &*fr.mandatory_dv {
-          let u = if a == v {
-            b
-          } else if b == v {
-            a
-          } else {
-            continue
-          };
-          if let Some(p) = fovars.iter_mut().find(|p| p.0 == u) {
-            p.1 = false
+      if !matches!(sub_type, SubType::Syntax) {
+        let mut fovars = vec![];
+        let mut sovars = vec![];
+        for hyp in &*fr.hypotheses {
+          if let Hyp::Floating(_, i, atom) = *hyp {
+            if self.first_order_tc.contains(&atom) {
+              fovars.push((i, true))
+            }
+            if self.second_order_tc.contains(&atom) {
+              sovars.push(i)
+            }
           }
         }
-        if fovars.iter().any(|p| p.1) {
-          use std::fmt::Write;
-          count += 1;
+        fovars.sort_unstable_by_key(|&(i, _)| names[i]);
+        sovars.sort_unstable_by_key(|&i| names[i]);
+        let mut count = 0;
+        let mut output = String::new();
+        for v in sovars {
+          fovars.iter_mut().for_each(|p| p.1 = true);
+          for &(a, b) in &*fr.mandatory_dv {
+            let u = if a == v {
+              b
+            } else if b == v {
+              a
+            } else {
+              continue
+            };
+            if let Some(p) = fovars.iter_mut().find(|p| p.0 == u) {
+              p.1 = false
+            }
+          }
+          if fovars.iter().any(|p| p.1) {
+            use std::fmt::Write;
+            count += 1;
+            write!(
+              &mut output,
+              " &nbsp; {}({})",
+              frr.html_defs[names[v].as_bytes()],
+              fovars
+                .iter()
+                .filter(|p| p.1)
+                .map(|&x| frr.html_defs[names[x.0].as_bytes()])
+                .format(",")
+            )
+            .unwrap()
+          }
+        }
+        if !output.is_empty() {
           write!(
-            &mut output,
-            " &nbsp; {}({})",
-            frr.html_defs[names[v].as_bytes()],
-            fovars
-              .iter()
-              .filter(|p| p.1)
-              .map(|&x| frr.html_defs[names[x.0].as_bytes()])
-              .format(",")
-          )
-          .unwrap()
+            w,
+            "<div style=\"text-align: center\">\
+              <a href=\"/mpeuni/mmset.html#allowedsubst\">Allowed substitution</a> hint{s}: \
+              <span class=math>{output}</span>\
+            </div>",
+            s = if count == 1 { "" } else { "s" },
+          )?;
         }
       }
-      write!(
-        w,
-        "<div style=\"text-align: center\">\
-          <a href=\"/mpeuni/mmset.html#allowedsubst\">Allowed substitution</a> hint{s}: ",
-        s = if count == 1 { "" } else { "s" },
-      )?;
-      write!(w, "<span class=math>")?;
-      write!(w, "{}</span></div>", output)?;
     }
     writeln!(w, "<hr />")?;
 
-    let thm_header = format!("<b>Proof of Theorem <span class=title>{}</span></b>", s_label);
-    let mut dummies =
-      if (fr.mandatory_count..fr.optional_dv.len()).all(|i| fr.optional_dv[i].is_empty()) {
-        vec![]
-      } else {
-        let vars = UseIter::new(stmt)
-          .filter_map(|s| db.scope_result().get(s))
-          .filter(|fr| fr.stype == StatementType::Floating)
-          .map(|fr| fr.var_list[0])
-          .collect::<HashSet<_>>();
-        (fr.mandatory_count..fr.optional_dv.len())
-          .filter(|&i| !fr.optional_dv[i].is_empty() && vars.contains(&fr.var_list[i]))
-          .collect::<Vec<_>>()
-      };
-    if !dummies.is_empty() {
-      dummies.sort_by_key(|&i| names[i]);
-      writeln!(w, "<div style=\"text-align: center\">{}</div>\n", thm_header)?;
+    let mut syntax = vec![];
+    let write_colors = |w: &mut W| {
       writeln!(
         w,
-        "<div style=\"text-align: center\">\
-          <a href=\"/mpeuni/mmset.html#dvnote1\">Dummy variable{s}</a> \
-          <span class=math>{dummies}</span> {is} distinct from all other variables.</div>",
-        s = if dummies.len() == 1 { "" } else { "s" },
-        dummies = dummies.iter().map(|&v| frr.html_defs[names[v].as_bytes()]).format(" "),
-        is = if dummies.len() == 1 { "is" } else { "are mutually distinct and" },
-      )?;
-      writeln!(w, "<table class=steps>")?
-    } else {
-      writeln!(w, "<table class=steps>\n<caption>{}</caption>", thm_header)?;
-    }
-    writeln!(w, "<tr><th>Step</th><th>Hyp</th><th>Ref</th><th>Expression</th></tr>")?;
-
-    let mut syntax = vec![];
-    if let Some(proof) = db.get_proof_tree(stmt) {
-      let mut order = CalcOrder::new(db, &proof);
-      order.step(proof.qed);
-      let indent = proof.indent();
-      for (step, &i) in order.order.iter().enumerate() {
-        let tree = &proof.trees[i];
-        let expr = &proof.exprs().unwrap()[i];
-        let ref_stmt = db.statement_by_address(tree.address);
-        let hyp = DisplayFn(|f| {
-          let mut iter = tree
-            .children
-            .iter()
-            .map(|&i| order.reverse[i])
-            .filter(|&i| i != SKIPPED_STEP)
-            .peekable();
-          if iter.peek().is_some() {
-            let iter =
-              iter.map(|i| DisplayFn(move |f| write!(f, "<a href=\"#{i}\">{i}</A>", i = i)));
-            write!(f, "{}", iter.format(", "))
-          } else {
-            write!(f, "&nbsp;")
+        "<table class=bottom-table>\n\
+          <tr><td><b>Colors of variables:</b> {var_color}</td></tr>",
+        var_color = self.html_var_color,
+      )
+    };
+    let is_thm = matches!(sub_type, SubType::Theorem);
+    if matches!(sub_type, SubType::Syntax) {
+      if let Some(s) =
+        db.statements_range_address((Bound::Excluded(cur), Bound::Unbounded)).find(|s| {
+          s.statement_type() == StatementType::Axiom && *s.math_at(0) == *b"|-" && {
+            let fr2 = scope.get(stmt.label()).unwrap();
+            fr.target.const_ranges().all(|sp| {
+              sp.is_empty() || {
+                let sp = &fr.const_pool[sp];
+                (fr2.target.const_ranges())
+                  .any(|sp2| fr2.const_pool[sp2].windows(sp.len()).contains(&sp))
+              }
+            })
           }
-        });
-
-        writeln!(w, "<tr><td>{}</td>\n<td>{}</td>", step + 1, hyp)?;
-        if ref_stmt.is_assertion() {
-          writeln!(
-            w,
-            "<td><a href=\"{ref_label}.html\" title=\"{descr}\">{ref_label}</a>{pink}</td>",
-            ref_label = as_str(ref_stmt.label()),
-            descr = as_str(&abbrev_desc(ref_stmt)).replace('\"', "'"),
-            pink = self.pink_num(Some(self.pink_numbers[ref_stmt.label()])),
-          )?;
+        })
+      {
+        let name = as_str(s.label());
+        let (pre, post) = if name.starts_with("ax-") {
+          ("This syntax is primitive.  The first axiom using it is ", "")
         } else {
-          writeln!(w, "<td>{}</td>", as_str(ref_stmt.label()))?;
-        }
-        write!(w, "<td class=math><span class=i>")?;
-        (0..indent[i]).try_for_each(|_| write!(w, ". "))?;
+          ("See definition ", " for more information")
+        };
         writeln!(
           w,
-          "{indent}</span>\n{fmla}</td></tr>",
-          indent = indent[i] + 1,
-          fmla = frr.expr(&ref_stmt.math_at(0), expr)
-        )?
+          "<div style=\"text-align: center\">\
+            {pre}<a href=\"{name}.html\">{name}</a>{post}</div>\n\
+          <hr />"
+        )?;
       }
-
-      syntax = proof
-        .trees
-        .iter()
-        .map(|tree| tree.address)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .map(|addr| db.statement_by_address(addr))
-        .filter_map(|stmt| self.syntax_hint.get(stmt.label()).map(|c| (stmt.label(), c)))
-        .collect_vec()
     } else {
-      writeln!(
-        w,
-        "<tr><td colspan=4 style=\"color: red\"><b>\
+      let mut proof = ProofTreeArray::default();
+      let proof_ok = if is_thm {
+        let thm_header = format!("<b>Proof of Theorem <span class=title>{s_label}</span></b>");
+        let mut dummies =
+          if (fr.mandatory_count..fr.optional_dv.len()).all(|i| fr.optional_dv[i].is_empty()) {
+            vec![]
+          } else {
+            let vars = UseIter::new(stmt)
+              .filter_map(|s| scope.get(s))
+              .filter(|fr| fr.stype == StatementType::Floating)
+              .map(|fr| fr.var_list[0])
+              .collect::<HashSet<_>>();
+            (fr.mandatory_count..fr.optional_dv.len())
+              .filter(|&i| !fr.optional_dv[i].is_empty() && vars.contains(&fr.var_list[i]))
+              .collect::<Vec<_>>()
+          };
+        if !dummies.is_empty() {
+          dummies.sort_by_key(|&i| names[i]);
+          writeln!(w, "<div style=\"text-align: center\">{thm_header}</div>\n")?;
+          writeln!(
+            w,
+            "<div style=\"text-align: center\">\
+              <a href=\"/mpeuni/mmset.html#dvnote1\">Dummy variable{s}</a> \
+              <span class=math>{dummies}</span> {is} distinct from all other variables.</div>",
+            s = if dummies.len() == 1 { "" } else { "s" },
+            dummies = dummies.iter().map(|&v| frr.html_defs[names[v].as_bytes()]).format(" "),
+            is = if dummies.len() == 1 { "is" } else { "are mutually distinct and" },
+          )?;
+          writeln!(w, "<table class=steps>")?
+        } else {
+          writeln!(w, "<table class=steps>\n<caption>{thm_header}</caption>")?;
+        }
+        if let Ok(qed) = db.verify_one(&mut proof, stmt) {
+          proof.qed = qed;
+          true
+        } else {
+          false
+        }
+      } else {
+        writeln!(
+          w,
+          "<table class=steps>\n\
+            <caption><b>Detailed syntax breakdown of {sub_type_upper} \
+              <span class=title>{s_label}</span></b></caption>"
+        )?;
+        let g = db.grammar_result();
+        let mut typecode = frr.names.get_atom(stmt.math_at(0).slice);
+        let provable = typecode == g.provable_typecode();
+        if provable {
+          typecode = g.logic_typecode()
+        }
+        let names = &mut NameReader::new(frr.names);
+        let fmla =
+          g.parse_formula(&mut stmt.token_iter(names), &[typecode], provable, frr.names).unwrap();
+        proof.qed = fmla.as_ref(db).build_syntax_proof(&mut vec![], &mut proof);
+        true
+      };
+
+      writeln!(w, "<tr><th>Step</th><th>Hyp</th><th>Ref</th><th>Expression</th></tr>")?;
+
+      if proof_ok {
+        let mut order = CalcOrder::new(db, &proof, is_thm && is_prov);
+        order.step(proof.qed, 0);
+        for (step, &(i, indent)) in order.order.iter().enumerate() {
+          let tree = &proof.trees[i];
+          let expr = &proof.exprs().unwrap()[i];
+          let ref_stmt = db.statement_by_address(tree.address);
+          let hyp = DisplayFn(|f| {
+            let mut iter = tree
+              .children
+              .iter()
+              .map(|&i| order.reverse[i])
+              .filter(|&i| i != SKIPPED_STEP)
+              .peekable();
+            if iter.peek().is_some() {
+              let iter = iter.map(|i| DisplayFn(move |f| write!(f, "<a href=\"#{i}\">{i}</A>")));
+              write!(f, "{}", iter.format(", "))
+            } else {
+              write!(f, "&nbsp;")
+            }
+          });
+
+          writeln!(w, "<tr><td>{step}</td>\n<td>{hyp}</td>", step = step + 1)?;
+          if ref_stmt.is_assertion() {
+            writeln!(
+              w,
+              "<td><a href=\"{ref_label}.html\" title=\"{descr}\">{ref_label}</a>{pink}</td>",
+              ref_label = as_str(ref_stmt.label()),
+              descr = as_str(&abbrev_desc(ref_stmt)).replace('\"', "'"),
+              pink = self.pink_num(Some(self.pink_numbers[ref_stmt.label()])),
+            )?;
+          } else {
+            writeln!(w, "<td>{}</td>", as_str(ref_stmt.label()))?;
+          }
+          write!(w, "<td class=math><span class=i>")?;
+          (0..indent).try_for_each(|_| write!(w, ". "))?;
+          writeln!(
+            w,
+            "{indent}</span>\n{fmla}</td></tr>",
+            indent = indent + 1,
+            fmla = frr.expr(&ref_stmt.math_at(0), expr)
+          )?
+        }
+
+        if is_thm {
+          syntax = proof
+            .trees
+            .iter()
+            .map(|tree| tree.address)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .map(|addr| db.statement_by_address(addr))
+            .filter_map(|stmt| self.syntax_hint.get(stmt.label()).map(|c| (stmt.label(), c)))
+            .collect_vec()
+        }
+      } else {
+        writeln!(
+          w,
+          "<tr><td colspan=4 style=\"color: red\"><b>\
             WARNING: Proof has a severe error.\
           </b></td></tr>"
-      )?
+        )?
+      }
+      writeln!(w, "</table>")?;
     }
-    writeln!(w, "</table>")?;
 
-    writeln!(
-      w,
-      "<table class=bottom-table>\n\
-        <tr><td><b>Colors of variables:</b> {var_color}</td></tr>",
-      var_color = self.html_var_color,
-    )?;
+    write_colors(w)?;
 
     if !syntax.is_empty() {
       syntax.sort_by_key(|(stmt, _)| self.pink_numbers[stmt]);
@@ -849,68 +950,70 @@ impl<'a> Renderer<'a> {
       writeln!(w, "</td></tr>")?;
     }
 
-    let mut usage = self
-      .trace_usage
-      .lock()
-      .unwrap()
-      .get(db, label)
-      .iter()
-      .filter_map(|&ax| db.statement(ax))
-      .sorted_by_key(|stmt| self.pink_numbers[stmt.label()])
-      .collect_vec();
+    if is_thm {
+      let mut usage = self
+        .trace_usage
+        .lock()
+        .unwrap()
+        .get(db, label)
+        .iter()
+        .filter_map(|&ax| db.statement(ax))
+        .sorted_by_key(|stmt| self.pink_numbers[stmt.label()])
+        .collect_vec();
 
-    let mut axioms = vec![];
-    let mut defs = vec![];
-    usage.retain(|stmt| {
-      stmt.statement_type() != StatementType::Axiom || {
-        let name = as_str(stmt.label());
-        if name.starts_with("ax-") {
-          axioms.push(name);
-          false
-        } else if name.starts_with("df-") {
-          defs.push(name);
-          false
-        } else {
-          *stmt.math_at(0) == *b"|-"
+      let mut axioms = vec![];
+      let mut defs = vec![];
+      usage.retain(|stmt| {
+        stmt.statement_type() != StatementType::Axiom || {
+          let name = as_str(stmt.label());
+          if name.starts_with("ax-") {
+            axioms.push(name);
+            false
+          } else if name.starts_with("df-") {
+            defs.push(name);
+            false
+          } else {
+            *stmt.math_at(0) == *b"|-"
+          }
         }
-      }
-    });
+      });
 
-    let mut write_list = |header: &str, labels: Vec<&str>| -> io::Result<_> {
-      if !labels.is_empty() {
-        writeln!(w, "<tr><td><b>{}:</b>", header)?;
-        for label in labels {
+      let mut write_list = |header: &str, labels: Vec<&str>| -> io::Result<_> {
+        if !labels.is_empty() {
+          writeln!(w, "<tr><td><b>{header}:</b>")?;
+          for label in labels {
+            writeln!(
+              w,
+              "&nbsp;<A HREF=\"{label}.html\">{label}</A>{pink}",
+              label = label,
+              pink = self.pink_num(Some(self.pink_numbers[label.as_bytes()])),
+            )?
+          }
+          writeln!(w, "</td></tr>")?;
+        }
+        Ok(())
+      };
+      write_list("This theorem was proved from axioms", axioms)?;
+      write_list("This theorem depends on definitions", defs)?;
+
+      if !usage.is_empty() {
+        if matches!(*usage, [stmt] if stmt.label() == label) {
           writeln!(
             w,
-            "&nbsp;<A HREF=\"{label}.html\">{label}</A>{pink}",
-            label = label,
-            pink = self.pink_num(Some(self.pink_numbers[label.as_bytes()])),
+            "<tr><td style=\"font-size: normal; color: #FF6600\">&nbsp;<b>\
+              WARNING: This theorem has an incomplete proof.</b><br/></td></tr>"
           )?
+        } else {
+          writeln!(
+            w,
+            "<tr><td style=\"font-size: normal; color: #FF6600\">&nbsp;<b>\
+              WARNING: This proof depends on the following unproved theorem(s): "
+          )?;
+          for stmt in usage {
+            writeln!(w, " <a href=\"{label}.html\">{label}</a>", label = as_str(stmt.label()))?
+          }
+          writeln!(w, "</b></td></tr>")?;
         }
-        writeln!(w, "</td></tr>")?;
-      }
-      Ok(())
-    };
-    write_list("This theorem was proved from axioms", axioms)?;
-    write_list("This theorem depends on definitions", defs)?;
-
-    if !usage.is_empty() {
-      if matches!(*usage, [stmt] if stmt.label() == label) {
-        writeln!(
-          w,
-          "<tr><td style=\"font-size: normal; color: #FF6600\">&nbsp;<b>\
-            WARNING: This theorem has an incomplete proof.</b><br/></td></tr>"
-        )?
-      } else {
-        writeln!(
-          w,
-          "<tr><td style=\"font-size: normal; color: #FF6600\">&nbsp;<b>\
-            WARNING: This proof depends on the following unproved theorem(s): "
-        )?;
-        for stmt in usage {
-          writeln!(w, " <a href=\"{label}.html\">{label}</a>", label = as_str(stmt.label()))?
-        }
-        writeln!(w, "</b></td></tr>")?;
       }
     }
 
@@ -918,20 +1021,22 @@ impl<'a> Renderer<'a> {
       .statements_range_address((Bound::Excluded(stmt.address()), Bound::Unbounded))
       .filter(|s| is_direct_use(s, label))
       .peekable();
-    writeln!(w, "<tr><td><b>This {} is referenced by:</b>", sub_type.1)?;
-    if iter.peek().is_some() {
-      for label in iter.map(|stmt| stmt.label()) {
-        writeln!(
-          w,
-          "&nbsp;<a href=\"{label}.html\">{label}</a>{pink}",
-          label = as_str(label),
-          pink = self.pink_num(Some(self.pink_numbers[label])),
-        )?
+    if !matches!(sub_type, SubType::Syntax) {
+      writeln!(w, "<tr><td><b>This {sub_type_lower} is referenced by:</b>")?;
+      if iter.peek().is_some() {
+        for label in iter.map(|stmt| stmt.label()) {
+          writeln!(
+            w,
+            "&nbsp;<a href=\"{label}.html\">{label}</a>{pink}",
+            label = as_str(label),
+            pink = self.pink_num(Some(self.pink_numbers[label])),
+          )?
+        }
+      } else {
+        writeln!(w, " (None)")?
       }
-    } else {
-      writeln!(w, " (None)")?
+      writeln!(w, "</td></tr>")?;
     }
-    writeln!(w, "</td></tr>")?;
     writeln!(w, "</table>")?;
 
     writeln!(
@@ -995,29 +1100,36 @@ impl<F: Fn(&mut std::fmt::Formatter<'_>) -> std::fmt::Result> Display for Displa
 struct CalcOrder<'a> {
   db: &'a Database,
   arr: &'a ProofTreeArray,
+  skip_syntax: bool,
   reverse: Box<[u32]>,
-  order: Vec<usize>,
+  order: Vec<(usize, u16)>,
 }
 
 const UNREACHABLE: u32 = 0;
 const SKIPPED_STEP: u32 = u32::MAX;
 impl<'a> CalcOrder<'a> {
-  fn new(db: &'a Database, arr: &'a ProofTreeArray) -> Self {
-    CalcOrder { db, arr, reverse: vec![UNREACHABLE; arr.trees.len()].into(), order: vec![] }
+  fn new(db: &'a Database, arr: &'a ProofTreeArray, skip_syntax: bool) -> Self {
+    CalcOrder {
+      db,
+      arr,
+      skip_syntax,
+      reverse: vec![UNREACHABLE; arr.trees.len()].into(),
+      order: vec![],
+    }
   }
-  fn step(&mut self, i: usize) {
+  fn step(&mut self, i: usize, depth: u16) {
     if self.reverse[i] != 0 {
       return
     }
     let tree = &self.arr.trees[i];
-    if *self.db.statement_by_address(tree.address).math_at(0) != *b"|-" {
+    if self.skip_syntax && *self.db.statement_by_address(tree.address).math_at(0) != *b"|-" {
       self.reverse[i] = SKIPPED_STEP;
       return
     }
     for &child in &tree.children {
-      self.step(child);
+      self.step(child, depth + 1);
     }
-    self.order.push(i);
+    self.order.push((i, depth));
     self.reverse[i] = self.order.len() as u32;
   }
 }
@@ -1166,7 +1278,7 @@ fn approximate_clique_cover_test() {
       }
     }
   }
-  println!("cover({}, {:?})", max, &edges);
+  println!("cover({max}, {edges:?})");
   // let mut now = Instant::now();
   let mut out = approximate_clique_cover(max, &edges);
   // dur += now.elapsed();

@@ -1,9 +1,9 @@
 mod render;
 
-use metamath_knife::{as_str, Database};
+use metamath_knife::{as_str, database::DbOptions, Database, StatementType};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use render::Renderer;
-use std::{fs::File, time::Instant};
+use std::{fs::File, io::BufWriter, time::Instant};
 
 fn main() {
   let mut iter = std::env::args().skip(1);
@@ -20,10 +20,19 @@ fn main() {
     Some("server") => None,
     _ => panic!("use 'mm-web-rs <DB> write <gif|uni> <LABEL|*>' or 'mm-web-rs <DB> server'"),
   };
-  let mut db = Database::default();
-  db.parse(file, vec![]);
+  let mut db = Database::new(DbOptions { incremental: true, ..DbOptions::default() });
+  db.parse(file.clone(), vec![]);
+  assert!(
+    db.statements().next().unwrap().statement_type() != StatementType::Eof,
+    "file {file} empty or not found"
+  );
   db.scope_pass();
   db.typesetting_pass();
+  if label.as_ref().map_or(true, |(_, label)| {
+    label == "*" || db.statement(label.as_bytes()).unwrap().statement_type() == StatementType::Axiom
+  }) {
+    db.grammar_pass();
+  }
   let mut renderer = Renderer::new(&db);
 
   if let Some((alt, label)) = label {
@@ -33,9 +42,8 @@ fn main() {
       db.statements().collect::<Vec<_>>().par_iter().for_each(|&stmt| {
         let start = Instant::now();
         let label = as_str(stmt.label());
-        renderer
-          .show_statement(&mut File::create(format!("{label}.html")).unwrap(), stmt, alt)
-          .unwrap();
+        let w = &mut BufWriter::new(File::create(format!("{label}.html")).unwrap());
+        renderer.show_statement(w, stmt, alt).unwrap();
         println!("rendered {} in {}ms", label, start.elapsed().as_millis());
       });
     } else {
