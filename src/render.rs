@@ -49,6 +49,7 @@ pub(crate) struct Renderer<'a> {
   second_order_tc: Vec<Atom>,
   syntax_hint: HashMap<&'a [u8], Box<[u8]>>,
   trace_usage: Mutex<TraceUsage<'a>>,
+  used_by: Option<HashMap<&'a [u8], Vec<StatementAddress>>>,
 }
 
 impl<'a> Renderer<'a> {
@@ -140,6 +141,7 @@ impl<'a> Renderer<'a> {
         })
         .collect(),
       trace_usage: Default::default(),
+      used_by: None,
     }
   }
 
@@ -161,6 +163,28 @@ impl<'a> Renderer<'a> {
       }
       self.mathbox_lookup = Some(headers)
     }
+  }
+
+  pub(crate) fn build_used_by(&mut self) {
+    if self.used_by.is_some() {
+      return
+    }
+    let mut used_by = HashMap::new();
+    for stmt in self.db.statements() {
+      if !stmt.is_assertion() {
+        continue
+      }
+      used_by.insert(stmt.label(), vec![]);
+      if stmt.statement_type() == StatementType::Provable {
+        let addr = stmt.address();
+        for tk in UseIter::new(stmt) {
+          if let Some(v) = used_by.get_mut(tk) {
+            v.push(addr)
+          }
+        }
+      }
+    }
+    self.used_by = Some(used_by)
   }
 
   fn mathbox_lookup(&self, stmt: &StatementRef<'_>) -> Option<Option<&'a str>> {
@@ -1017,22 +1041,30 @@ impl<'a> Renderer<'a> {
       }
     }
 
-    let mut iter = db
-      .statements_range_address((Bound::Excluded(stmt.address()), Bound::Unbounded))
-      .filter(|s| is_direct_use(s, label))
-      .peekable();
     if !matches!(sub_type, SubType::Syntax) {
       writeln!(w, "<tr><td><b>This {sub_type_lower} is referenced by:</b>")?;
-      if iter.peek().is_some() {
-        for label in iter.map(|stmt| stmt.label()) {
-          writeln!(
-            w,
-            "&nbsp;<a href=\"{label}.html\">{label}</a>{pink}",
-            label = as_str(label),
-            pink = self.pink_num(Some(self.pink_numbers[label])),
-          )?
+      let mut empty = true;
+      let mut write_one = |label| {
+        empty = false;
+        writeln!(
+          w,
+          "&nbsp;<a href=\"{label}.html\">{label}</a>{pink}",
+          label = as_str(label),
+          pink = self.pink_num(Some(self.pink_numbers[label])),
+        )
+      };
+      if let Some(used_by) = &self.used_by {
+        for &addr in &used_by[stmt.label()] {
+          write_one(db.statement_by_address(addr).label())?
         }
       } else {
+        for s in db.statements_range_address((Bound::Excluded(stmt.address()), Bound::Unbounded)) {
+          if is_direct_use(&s, label) {
+            write_one(stmt.label())?
+          }
+        }
+      }
+      if empty {
         writeln!(w, " (None)")?
       }
       writeln!(w, "</td></tr>")?;
@@ -1191,7 +1223,7 @@ impl<'a> TraceUsage<'a> {
       }
       Some(out)
     })()
-    .unwrap_or_else(|| [label].into_iter().collect());
+    .unwrap_or_else(|| std::iter::once(label).collect());
     self.0.entry(label).or_insert(out)
   }
 }

@@ -3,7 +3,12 @@ mod render;
 use metamath_knife::{as_str, database::DbOptions, Database, StatementType};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use render::Renderer;
-use std::{fs::File, io::BufWriter, time::Instant};
+use std::{
+  fs::File,
+  io::BufWriter,
+  sync::{atomic::AtomicU32, RwLock},
+  time::Instant,
+};
 
 fn main() {
   let mut iter = std::env::args().skip(1);
@@ -38,13 +43,24 @@ fn main() {
   if let Some((alt, label)) = label {
     if label == "*" {
       renderer.prep_mathbox_lookup();
+      renderer.build_used_by();
       // FIXME: this seems wasteful, should the db expose a par_iter interface?
-      db.statements().collect::<Vec<_>>().par_iter().for_each(|&stmt| {
-        let start = Instant::now();
+      let statements = db.statements().filter(|s| s.is_assertion()).collect::<Vec<_>>();
+      let total = statements.len();
+
+      let done = AtomicU32::new(0);
+      let last = RwLock::new(Instant::now());
+      statements.par_iter().for_each(|&stmt| {
         let label = as_str(stmt.label());
         let w = &mut BufWriter::new(File::create(format!("{label}.html")).unwrap());
         renderer.show_statement(w, stmt, alt).unwrap();
-        println!("rendered {} in {}ms", label, start.elapsed().as_millis());
+        let end = Instant::now();
+        let done = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let start2 = *last.read().unwrap();
+        if (end - start2).as_millis() > 1000 {
+          *last.write().unwrap() = end;
+          println!("[{done}/{total}] rendering {}", label);
+        }
       });
     } else {
       let stmt = db.statement(label.as_bytes()).unwrap();
