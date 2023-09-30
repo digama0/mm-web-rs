@@ -21,7 +21,7 @@ const GRAY_BORDER_COLOR: &str = "#B2B2B2";
 const MINT_BACKGROUND_COLOR: &str = "#EEFFFA";
 
 pub(crate) struct Renderer<'a> {
-  db: &'a Database,
+  pub(crate) db: &'a Database,
   pink_numbers: HashMap<&'a [u8], usize>,
   mathbox_addr: Option<StatementAddress>,
   mathbox_lookup: Option<Vec<(StatementAddress, &'a str)>>,
@@ -1060,7 +1060,7 @@ impl<'a> Renderer<'a> {
       } else {
         for s in db.statements_range_address((Bound::Excluded(stmt.address()), Bound::Unbounded)) {
           if is_direct_use(&s, label) {
-            write_one(stmt.label())?
+            write_one(s.label())?
           }
         }
       }

@@ -9,10 +9,9 @@ edition = "2021"
 opt-level = 2
 
 [features]
-server = ["lazy_static", "actix-web"]
+server = ["actix-web"]
 
 [dependencies]
-lazy_static = { version = "1.4", optional = true }
 metamath-knife = { path = "../metamath-knife" }
 rayon = "1.8"
 actix-web = { version = "3.3", optional = true }

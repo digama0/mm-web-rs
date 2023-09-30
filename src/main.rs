@@ -38,9 +38,9 @@ fn main() {
   }) {
     db.grammar_pass();
   }
-  let mut renderer = Renderer::new(&db);
 
   if let Some((alt, label)) = label {
+    let mut renderer = Renderer::new(&db);
     if label == "*" {
       renderer.prep_mathbox_lookup();
       renderer.build_used_by();
@@ -73,12 +73,17 @@ fn main() {
 
     #[cfg(feature = "server")]
     {
+      let mut renderer = Renderer::new(&*Box::leak(Box::new(db)));
       renderer.prep_mathbox_lookup();
+      let renderer = actix_web::web::Data::new(renderer);
       actix_web::rt::System::new("server")
         .block_on(async move {
           println!("starting server, open http://localhost:8080/");
-          actix_web::HttpServer::new(|| {
-            actix_web::App::new().service(render_thm_mpeuni).service(render_thm_mpegif)
+          actix_web::HttpServer::new(move || {
+            actix_web::App::new()
+              .app_data(renderer.clone())
+              .service(render_thm_mpeuni)
+              .service(render_thm_mpegif)
           })
           .bind("localhost:8080")?
           .run()
@@ -90,22 +95,16 @@ fn main() {
 }
 
 #[cfg(feature = "server")]
-fn render_thm(label: String, alt: bool) -> impl actix_web::Responder {
-  lazy_static::lazy_static! {
-    static ref DB: Box<Database> = {
-      let mut db = Box::<Database>::default();
-      db.parse("../mm/set.mm".into(), vec![]);
-      db.scope_pass();
-      db.typesetting_pass();
-      db
-    };
-    static ref RENDERER: Renderer<'static> = Renderer::new(&DB);
-  }
-
-  let stmt = DB.statement(label.as_bytes()).unwrap();
+fn render_thm(r: &Renderer<'_>, label: String, alt: bool) -> impl actix_web::Responder {
+  let Some(stmt) = r.db.statement(label.as_bytes()) else {
+    return actix_web::HttpResponse::NotFound().into()
+  };
+  if !stmt.is_assertion() {
+    return actix_web::HttpResponse::NotFound().into()
+  };
   let mut w = vec![];
   let now = std::time::Instant::now();
-  RENDERER.show_statement(&mut w, stmt, alt).unwrap();
+  r.show_statement(&mut w, stmt, alt).unwrap();
   println!("rendered {} in {}ms", label, now.elapsed().as_millis());
   actix_web::HttpResponse::Ok().body(w)
 }
@@ -113,15 +112,17 @@ fn render_thm(label: String, alt: bool) -> impl actix_web::Responder {
 #[cfg(feature = "server")]
 #[actix_web::get("/mpeuni/{label}.html")]
 async fn render_thm_mpeuni(
+  data: actix_web::web::Data<Renderer<'static>>,
   actix_web::web::Path(label): actix_web::web::Path<String>,
 ) -> impl actix_web::Responder {
-  render_thm(label, true)
+  render_thm(&data, label, true)
 }
 
 #[cfg(feature = "server")]
 #[actix_web::get("/mpegif/{label}.html")]
 async fn render_thm_mpegif(
+  data: actix_web::web::Data<Renderer<'static>>,
   actix_web::web::Path(label): actix_web::web::Path<String>,
 ) -> impl actix_web::Responder {
-  render_thm(label, false)
+  render_thm(&data, label, false)
 }
