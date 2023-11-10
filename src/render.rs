@@ -1,3 +1,4 @@
+use crate::THMS_PER_PAGE;
 use itertools::Itertools;
 use metamath_knife::{
   comment_parser::{CommentItem, CommentParser},
@@ -19,6 +20,44 @@ use std::{
 const GREEN_TITLE_COLOR: &str = "#006633";
 const GRAY_BORDER_COLOR: &str = "#B2B2B2";
 const MINT_BACKGROUND_COLOR: &str = "#EEFFFA";
+const PURPLISH_BIBLIO_COLOR: &str = "#FAEEFF";
+const SANDBOX_COLOR: &str = "#FFFFD9";
+
+#[derive(Clone, Copy)]
+struct Heading<'a> {
+  header: &'a str,
+  content: &'a str,
+  level: HeadingLevel,
+  stmt_num: usize,
+  index: [u16; 4],
+}
+
+impl<'a> Heading<'a> {
+  fn idx(&self) -> impl Display {
+    let [i1, i2, i3, i4] = self.index;
+    let level = self.level;
+    DisplayFn(move |f| match level {
+      HeadingLevel::MajorPart => write!(f, "{i1}"),
+      HeadingLevel::Section => write!(f, "{i1}.{i2}"),
+      HeadingLevel::SubSection => write!(f, "{i1}.{i2}.{i3}"),
+      HeadingLevel::SubSubSection => write!(f, "{i1}.{i2}.{i3}.{i4}"),
+      HeadingLevel::Database | HeadingLevel::Statement => unreachable!(),
+    })
+  }
+
+  fn header(&self) -> impl Display + 'a {
+    let idx = self.idx();
+    let header = self.header;
+    let level = self.level;
+    DisplayFn(move |f| {
+      write!(
+        f,
+        "{}{idx}&nbsp;&nbsp;{header}",
+        if level == HeadingLevel::MajorPart { "PART " } else { "" }
+      )
+    })
+  }
+}
 
 pub(crate) struct Renderer<'a> {
   pub(crate) db: &'a Database,
@@ -31,6 +70,7 @@ pub(crate) struct Renderer<'a> {
   html_var_color: String,
   html_title: &'a str,
   html_title_abbr: String,
+  html_home: &'a str,
   html_home_href: &'a str,
   html_home_img: &'a str,
   html_dir: &'a str,
@@ -50,6 +90,8 @@ pub(crate) struct Renderer<'a> {
   syntax_hint: HashMap<&'a [u8], Box<[u8]>>,
   trace_usage: Mutex<TraceUsage<'a>>,
   used_by: Option<HashMap<&'a [u8], Vec<StatementAddress>>>,
+  pub(crate) statements: Vec<StatementRef<'a>>,
+  headings: Vec<Heading<'a>>,
 }
 
 impl<'a> Renderer<'a> {
@@ -63,9 +105,10 @@ impl<'a> Renderer<'a> {
     let ts = &**db.typesetting_result();
     let html_title = ts.html_title.as_ref().map_or("Metamath Test Page", |s| as_str(&s.1));
     let html_home = ts.html_home.as_ref().map_or(
-      "<A HREF=\"mmset.html\"><FONT SIZE=-2 FACE=sans-serif>\
-        <IMG SRC=\"mm.gif\" BORDER=0 ALT=\"Home\"\
-          HEIGHT=32 WIDTH=32 ALIGN=MIDDLE STYLE=\"margin-bottom:0px\">Home</FONT></A>",
+      "<a href=\"mmset.html\">\
+        <img src=\"mm.gif\" alt=\"Home\" height=32 width=32 \
+          style=\"vertical-align: middle; margin-bottom: 0\">Home\
+      </a>",
       |s| as_str(&s.1),
     );
     let names = db.name_result();
@@ -112,12 +155,13 @@ impl<'a> Renderer<'a> {
       ext_html_title,
       ext_html_title_abbr: format!(
         "{abbr} Home",
-        abbr = html_title.matches(|c: char| c.is_ascii_uppercase()).collect::<String>()
+        abbr = ext_html_title.matches(|c: char| c.is_ascii_uppercase()).collect::<String>()
       ),
       ext_html_home_href,
       ext_html_home_img,
       ext_html_bibliography: ts.ext_html_bibliography.as_ref().map_or("", |s| as_str(&s.1)),
       html_ext_url: ts.html_ext_url.as_ref().map_or("", |s| as_str(&s.1)),
+      html_home,
       html_home_href: html_home.split_once("HREF=\"").unwrap().1.split_once('\"').unwrap().0,
       html_home_img: html_home.split_once("IMG SRC=\"").unwrap().1.split_once('\"').unwrap().0,
       first_order_tc: get_tc(&[b"setvar"]),
@@ -142,9 +186,14 @@ impl<'a> Renderer<'a> {
         .collect(),
       trace_usage: Default::default(),
       used_by: None,
+      statements: vec![],
+      headings: Default::default(),
     }
   }
 
+  pub(crate) fn num_pages(&self) -> usize {
+    (self.statements.len() + (THMS_PER_PAGE - 1)) / THMS_PER_PAGE
+  }
   pub(crate) fn prep_mathbox_lookup(&mut self) {
     if let Some(addr) = self.mathbox_addr {
       if self.mathbox_lookup.is_some() {
@@ -187,6 +236,44 @@ impl<'a> Renderer<'a> {
     self.used_by = Some(used_by)
   }
 
+  pub(crate) fn build_statements(&mut self, and_headers: bool) {
+    if !self.statements.is_empty() {
+      return
+    }
+    if and_headers {
+      let mut headings = [None; 4];
+      let mut index = [0u16; 4];
+      for stmt in self.db.statements() {
+        match stmt.statement_type() {
+          StatementType::HeadingComment(level) =>
+            if let Some(head) = stmt.as_heading_comment() {
+              let buf = &stmt.segment().segment.buffer;
+              headings[level as usize - 1] = Some(Heading {
+                header: as_str(head.header.as_ref(buf)).trim(),
+                content: as_str(head.content.as_ref(buf)).trim(),
+                stmt_num: self.statements.len(),
+                level,
+                index: [0; 4],
+              });
+            },
+          StatementType::Axiom | StatementType::Provable => {
+            for (i, heading) in headings.iter_mut().enumerate() {
+              if let Some(heading) = heading.take() {
+                index[i] += 1;
+                index[i + 1..].iter_mut().for_each(|j| *j = 0);
+                self.headings.push(Heading { index, ..heading })
+              }
+            }
+            self.statements.push(stmt);
+          }
+          _ => {}
+        }
+      }
+    } else {
+      self.statements.extend(self.db.statements().filter(|s| s.is_assertion()))
+    }
+  }
+
   fn mathbox_lookup(&self, stmt: &StatementRef<'_>) -> Option<Option<&'a str>> {
     let mbox_addr = self.mathbox_addr?;
     let addr = stmt.address();
@@ -212,9 +299,12 @@ impl<'a> Renderer<'a> {
 }
 
 impl Renderer<'_> {
-  fn pink_num(&self, pink_num: Option<usize>) -> impl Display {
+  fn pink_num(&self, space: bool, pink_num: Option<usize>) -> impl Display {
     let max = self.pink_numbers.len() as f64;
     DisplayFn(move |f| {
+      if space {
+        write!(f, "&nbsp;")?
+      }
       if let Some(n) = pink_num {
         const PARTITIONS: usize = 28;
         const SPECTRUM: [[u8; 3]; PARTITIONS + 1] = [
@@ -254,7 +344,7 @@ impl Renderer<'_> {
         let i = position as usize;
         assert!(i < PARTITIONS);
         let fraction = position - i as f64;
-        write!(f, "&nbsp;<span class=r style=\"color:#")?;
+        write!(f, "<span class=r style=\"color:#")?;
         for d in 0..3 {
           write!(
             f,
@@ -265,7 +355,7 @@ impl Renderer<'_> {
         }
         write!(f, "\">{n}</span>", n = n + 1)
       } else {
-        write!(f, "&nbsp;<span class=r style=\"color:#000000\">(future)</span>")
+        write!(f, "<span class=r style=\"color:#000000\">(future)</span>")
       }
     })
   }
@@ -386,7 +476,7 @@ impl Display for Comment<'_, '_> {
         }
         CommentItem::LineBreak(_) => {
           trim_prev_ws = true;
-          write!(f, "<p style=\"margin-bottom:0em\">")?
+          write!(f, "<p>")?
         }
         CommentItem::StartMathMode(_) => write!(f, "<span {}>", self.r.html_font)?,
         CommentItem::EndMathMode(_) => {
@@ -406,7 +496,7 @@ impl Display for Comment<'_, '_> {
             f,
             "<a href=\"{label}.html\">{label}</a>{pink}",
             label = as_str(&out),
-            pink = self.r.pink_num(Some(self.r.pink_numbers[&*out])),
+            pink = self.r.pink_num(true, Some(self.r.pink_numbers[&*out])),
           )?
         }
         CommentItem::Url(_, sp) => {
@@ -485,12 +575,10 @@ impl Display for ExprHtml<'_> {
 }
 
 impl<'a> Renderer<'a> {
-  #[allow(clippy::too_many_arguments)]
   pub(crate) fn show_statement<W: Write>(
     &self, w: &mut W, stmt: StatementRef<'a>, alt: bool,
   ) -> io::Result<()> {
     let db = self.db;
-    let css = &*self.html_css;
     let ext = (self.ext_html_addr.as_ref())
       .map_or(false, |addr| db.cmp_address(addr, &stmt.address()).is_le());
     let mboxness = self.mathbox_lookup(&stmt);
@@ -560,11 +648,10 @@ impl<'a> Renderer<'a> {
         <meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\n\
         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n\
         <style>\n\
-        <!--\n\
         img {{ border: 0; margin-bottom: -4px }}\n\
         .steps {{ \
           text-align: center; border-spacing: 0; background-color: {bgcolor}; \
-          margin-left: auto; margin-right: auto; \
+          margin: auto; \
           border: outset 1px {border_color}; \
         }}\n\
         .steps td, .steps th {{ border: inset 1px {border_color}; }}\n\
@@ -573,19 +660,19 @@ impl<'a> Renderer<'a> {
         .title {{ font-weight: bold; color: {title_color}; }}\n\
         .bottom-table {{ \
           text-align: center; border-spacing: 5px; \
-          margin-left: auto; margin-right: auto; \
+          margin: auto; \
         }}\n\
         .bottom-table td {{ text-align: left; font-size: small; }}\n\
         hr {{ border-style: solid; border-top: 1px; }}\n\
         .r {{ font-family: \"Arial Narrow\"; font-size: x-small; }}\n\
         .i {{ font-family: \"Arial Narrow\"; font-size: x-small; color: gray; }}\n\
-        -->\n\
+        .comment p {{ margin-bottom: 0 }}\n\
         </style>\n\
         {css}\n\
         <title>{label} - {title}</title>\n\
         <link rel=\"shortcut icon\" href=\"favicon.ico\" type=\"image/x-icon\">\n\
       </head><body style=\"background-color: #FFFFFF\">\n\
-        <table style=\"border-width: 0; border-spacing: 0; width: 100%\">\n\
+        <table style=\"border-spacing: 0; width: 100%\">\n\
           <tr>\n\
             <td style=\"padding: 0; text-align: left; vertical-align: top; width: 25%\">\n\
               <a href=\"{home_href}\">\n\
@@ -601,7 +688,7 @@ impl<'a> Renderer<'a> {
               <span style=\"font-size: small\">\n\
                 <a href=\"{prev}.html\">&lt; {prev_text}</a>&nbsp;&nbsp;\n\
                 <a href=\"{next}.html\">{next_text} &gt;</a>\n\
-              </span><br/>\
+              </span><br>\
               <a href=\"mmtheorems{page}.html#{label}\">Nearby theorems</a>\n\
             </td>\n\
           </tr><tr style=\"font-size: x-small; font-family: sans-serif; vertical-align: top\">\n\
@@ -618,31 +705,27 @@ impl<'a> Renderer<'a> {
             </td>\n\
           </tr>\n\
         </table>\n\
-        <hr />\n\
+        <hr>\n\
         <div style=\"text-align: center\">\n\
           <b style=\"font-size: large\">\
             {sub_type} <span class=title>{label}</span>\
           </b>{pink_html}\
         </div>\n\
         <div style=\"text-align: center; padding: 3px\">\n\
-          <div style=\"text-align: left; display: inline-block\">\
+          <div class=comment style=\"text-align: left; display: inline-block\">\
             <b>Description: </b>{comment}\
           </div>\n\
         </div>",
       border_color = GRAY_BORDER_COLOR,
       bgcolor = MINT_BACKGROUND_COLOR,
-      css = css,
+      css = &*self.html_css,
       label = s_label,
-      title = title,
-      home_href = home_href,
-      home_img = home_img,
-      title_abbr = title_abbr,
       title_color = GREEN_TITLE_COLOR,
       prev = as_str(prev.label()),
       prev_text = if wrap_prev { "Wrap" } else { "Previous" },
       next = as_str(next.label()),
       next_text = if wrap_next { "Wrap" } else { "Next" },
-      page = self.pink_numbers[stmt.label()] / 100 + 1,
+      page = self.pink_numbers[stmt.label()] / THMS_PER_PAGE + 1,
       mbox = if mboxness.is_some() {
         "<a href=\"mmtheorems.html#sandbox:bighdr\">Mathboxes</a>&nbsp; &gt; &nbsp;"
       } else {
@@ -650,10 +733,8 @@ impl<'a> Renderer<'a> {
       },
       html_ext_url = html_ext_url.replace('*', s_label),
       other_name = if alt { "GIF" } else { "Unicode" },
-      other_dir = other_dir,
       sub_type = sub_type_upper,
-      pink_html = self.pink_num(Some(self.pink_numbers[stmt.label()])),
-      comment = comment,
+      pink_html = self.pink_num(true, Some(self.pink_numbers[stmt.label()])),
     )?;
 
     let scope = db.scope_result();
@@ -790,7 +871,7 @@ impl<'a> Renderer<'a> {
         }
       }
     }
-    writeln!(w, "<hr />")?;
+    writeln!(w, "<hr>")?;
 
     let mut syntax = vec![];
     let write_colors = |w: &mut W| {
@@ -827,7 +908,7 @@ impl<'a> Renderer<'a> {
           w,
           "<div style=\"text-align: center\">\
             {pre}<a href=\"{name}.html\">{name}</a>{post}</div>\n\
-          <hr />"
+          <hr>"
         )?;
       }
     } else {
@@ -883,10 +964,16 @@ impl<'a> Renderer<'a> {
           typecode = g.logic_typecode()
         }
         let names = &mut NameReader::new(frr.names);
-        let fmla =
-          g.parse_formula(&mut stmt.token_iter(names), &[typecode], provable, frr.names).unwrap();
-        proof.qed = fmla.as_ref(db).build_syntax_proof(&mut vec![], &mut proof);
-        true
+        match g.parse_formula(&mut stmt.token_iter(names), &[typecode], provable, frr.names) {
+          Ok(fmla) => {
+            proof.qed = fmla.as_ref(db).build_syntax_proof(&mut vec![], &mut proof);
+            true
+          }
+          Err(_) => {
+            eprintln!("failed to parse {s_label}");
+            false
+          }
+        }
       };
 
       writeln!(w, "<tr><th>Step</th><th>Hyp</th><th>Ref</th><th>Expression</th></tr>")?;
@@ -920,7 +1007,7 @@ impl<'a> Renderer<'a> {
               "<td><a href=\"{ref_label}.html\" title=\"{descr}\">{ref_label}</a>{pink}</td>",
               ref_label = as_str(ref_stmt.label()),
               descr = as_str(&abbrev_desc(ref_stmt)).replace('\"', "'"),
-              pink = self.pink_num(Some(self.pink_numbers[ref_stmt.label()])),
+              pink = self.pink_num(true, Some(self.pink_numbers[ref_stmt.label()])),
             )?;
           } else {
             writeln!(w, "<td>{}</td>", as_str(ref_stmt.label()))?;
@@ -967,7 +1054,7 @@ impl<'a> Renderer<'a> {
           w,
           " &nbsp;<span class=math>{tk}</span><A HREF=\"{label}.html\">{label}</A>{pink}",
           tk = frr.html_defs[&**c],
-          pink = self.pink_num(Some(self.pink_numbers[label])),
+          pink = self.pink_num(true, Some(self.pink_numbers[label])),
           label = as_str(label)
         )?;
       }
@@ -1010,7 +1097,7 @@ impl<'a> Renderer<'a> {
               w,
               "&nbsp;<A HREF=\"{label}.html\">{label}</A>{pink}",
               label = label,
-              pink = self.pink_num(Some(self.pink_numbers[label.as_bytes()])),
+              pink = self.pink_num(true, Some(self.pink_numbers[label.as_bytes()])),
             )?
           }
           writeln!(w, "</td></tr>")?;
@@ -1025,7 +1112,7 @@ impl<'a> Renderer<'a> {
           writeln!(
             w,
             "<tr><td style=\"font-size: normal; color: #FF6600\">&nbsp;<b>\
-              WARNING: This theorem has an incomplete proof.</b><br/></td></tr>"
+              WARNING: This theorem has an incomplete proof.</b><br></td></tr>"
           )?
         } else {
           writeln!(
@@ -1050,7 +1137,7 @@ impl<'a> Renderer<'a> {
           w,
           "&nbsp;<a href=\"{label}.html\">{label}</a>{pink}",
           label = as_str(label),
-          pink = self.pink_num(Some(self.pink_numbers[label])),
+          pink = self.pink_num(true, Some(self.pink_numbers[label])),
         )
       };
       if let Some(used_by) = &self.used_by {
@@ -1086,6 +1173,459 @@ impl<'a> Renderer<'a> {
       </tr></table>"
     )?;
     writeln!(w, "</body></html>")
+  }
+
+  pub(crate) fn show_theorems<W: Write>(
+    &self, w: &mut W, page: Option<usize>, num_pages: usize, alt: bool,
+  ) -> io::Result<()> {
+    let db = self.db;
+    let has_mmrecent = self.mathbox_addr.is_some();
+    let mmtheorem = |page| {
+      DisplayFn(move |f| match page {
+        Some(page) => write!(f, "mmtheorems{}", page + 1),
+        None => write!(f, "mmtheorems"),
+      })
+    };
+    let prev = match page {
+      Some(0) => None,
+      Some(page) => Some(page - 1),
+      None => num_pages.checked_sub(1),
+    };
+    let next = match page.map_or(0, |page| page + 1) {
+      page if page + 1 == num_pages => None,
+      page => Some(page),
+    };
+    let prev_next = format!(
+      "<a href=\"{prev}.html\">&lt; {prev_text}</a>&nbsp;&nbsp;\
+      <a href=\"{next}.html\">{next_text} &gt;</a>\n",
+      prev = mmtheorem(prev),
+      prev_text = if page.is_none() { "Wrap" } else { "Previous" },
+      next = mmtheorem(next),
+      next_text = if next.is_none() { "Wrap" } else { "Next" },
+    );
+    writeln!(
+      w,
+      "<!DOCTYPE html>\n\
+      <html lang=\"en-us\"><head>\n\
+        <meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\n\
+        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n\
+        <style>\n\
+        img {{ border: 0; margin-bottom: -4px }}\n\
+        .r {{ font-family: \"Arial Narrow\"; font-size: x-small; }}\n\
+        .top td {{ padding: 1px; }}\n\
+        .color-key td {{ padding: 5px; }}\n\
+        .thlist {{ \
+          border-spacing: 0; margin: auto; background-color: {bgcolor}; \
+          border: outset 1px {border_color}; \
+        }}\n\
+        .thlist td, .thlist th {{ padding: 3px; border: inset 1px {border_color}; }}\n\
+        .sp {{ background-color: white; }}\n\
+        .sp td {{ font-size: x-small; }}\n\
+        .th {{ white-space: nowrap; }}\n\
+        .stx {{ white-space: nowrap; font-weight: bold; color: #00CC00 }}\n\
+        .ax {{ white-space: nowrap; font-weight: bold; color: red }}\n\
+        .df {{ white-space: nowrap; font-weight: bold; color: blue }}\n\
+        .comment p {{ margin-bottom: 0 }}\n\
+        .heading {{ background-color: #FFFFF2 }}\n\
+        .heading h3 {{ font-size: large; text-align: center; margin: 0 }}\n\
+        .ext {{ background-color: {PURPLISH_BIBLIO_COLOR} }}\n\
+        .sbox {{ background-color: {SANDBOX_COLOR} }}\n\
+        </style>\n\
+        {css}\n\
+        <title>{page} of Theorem List - {title}</title>\n\
+        <link rel=\"shortcut icon\" href=\"favicon.ico\" type=\"image/x-icon\">\n\
+      </head><body style=\"background-color: #FFFFFF\">\n\
+        <table class=top style=\"width: 100%\">\n\
+          <tr>\n\
+            <td style=\"text-align: left; vertical-align: top; width: 25%; \
+                font-size: x-small; font-family: sans-serif\" rowspan=2>\
+              {html_home}\
+            </td>\n\
+            <td style=\"text-align: center; white-space: nowrap\" rowspan=2>\n\
+              <b style=\"font-size: xx-large; color: {title_color}\">{title}</b><br>\n\
+              <b style=\"font-size: x-large; color: {title_color}\">\
+                Theorem List ({subtitle})\
+              </b>\n\
+            </td>\n\
+            <td style=\"text-align: right; vertical-align: top; white-space: nowrap; \
+                width: 25%; font-size: small; font-family: sans-serif\">\n\
+              {prev_next}\
+            </td>\n\
+          </tr><tr>\n\
+            <td style=\"text-align: right; font-size: x-small; font-family: sans-serif\">\
+              {other_flavor} Try the<br>\n\
+              <a href=\"{other_dir}{page_name}\">{other_name} version</a>.\
+            </td>\n\
+          </tr><tr style=\"font-size: x-small; font-family: sans-serif; vertical-align: top\">\n\
+            <td style=\"text-align: left\" colspan=3>\n\
+              <br>\n\
+              <a href=\"../mm.html\">Mirrors</a>&nbsp; &gt; &nbsp;\
+              <a href=\"../index.html\">Metamath Home Page</a>&nbsp; &gt; &nbsp;\
+              <a href=\"{bib_href}\">{title_abbr} Page</a>&nbsp; &gt; &nbsp;\
+              {top_thm_link}{mmrecent} &nbsp; &nbsp; &nbsp;\n\
+              <b style=\"color: {title_color}\"> This page:</b>\n\
+              {dtoc_link}\
+              <a href=\"#mmpglst\">Page List</a>\n\
+            </td>\n\
+          </tr>\n\
+        </table>\n\
+        <hr style=\"border: 1px solid gray\">",
+      bgcolor = MINT_BACKGROUND_COLOR,
+      border_color = GRAY_BORDER_COLOR,
+      css = &*self.html_css,
+      page = DisplayFn(|f| match page {
+        Some(page) => write!(f, "{}", page + 1),
+        None => write!(f, "TOC"),
+      }),
+      title = self.html_title,
+      html_home = self.html_home,
+      title_color = GREEN_TITLE_COLOR,
+      subtitle = DisplayFn(|f| match page {
+        Some(page) => write!(f, "p. {} of {num_pages}", page + 1),
+        None => write!(f, "Table of Contents"),
+      }),
+      other_flavor = if alt { "Bad symbols?" } else { "Browser slow?" },
+      other_name = if alt { "GIF" } else { "Unicode" },
+      other_dir = if alt { self.html_dir } else { self.alt_html_dir },
+      page_name = mmtheorem(page),
+      bib_href = self.html_bibliography,
+      title_abbr = self.html_title_abbr,
+      top_thm_link = match page {
+        Some(_) => "<a href=\"mmtheorems.html\">Theorem List Contents</a>",
+        None => "Theorem List Contents",
+      },
+      mmrecent = match has_mmrecent {
+        true => "&nbsp; &gt; &nbsp;\n<a href=\"mmrecent.html\">Recent Proofs</a>",
+        false => "",
+      },
+      dtoc_link = match page {
+        Some(_) => "",
+        None => "<a href=\"#mmdtoc\">Detailed Table of Contents</a>&nbsp;\n",
+      },
+    )?;
+
+    let end = self.statements.len();
+    if let Some(page) = page {
+      writeln!(w, "<span id=\"mmstmtlst\"></span>")?;
+      let get_pink = |addr| Some(*self.pink_numbers.get(db.statement_by_address(addr).label())?);
+      let mathbox_num = self.mathbox_addr.and_then(get_pink).unwrap_or(end);
+      let ext_html_num =
+        self.ext_html_addr.and_then(get_pink).unwrap_or(mathbox_num).min(mathbox_num);
+
+      if self.ext_html_addr.is_some() || self.mathbox_addr.is_some() {
+        writeln!(
+          w,
+          "<p>\n\
+          <table class=color-key style=\"border-spacing: 0; margin: auto\"><tr>\n\
+            <td style=\"padding: 5px\">Color key:&nbsp;&nbsp;&nbsp;</td>"
+        )?;
+        let mut write_td = |(from, to), bgcolor, (title, href, img)| {
+          writeln!(
+            w,
+            "<td style=\"background-color: {bgcolor}; white-space: nowrap\">\
+              <a href=\"{href}\">\
+                <img src=\"{img}\" style=\"vertical-align: middle\" \
+                    alt=\"{title}\" height=32 width=32> \
+                &nbsp;{title}\
+              </a><br>\n\
+              ({from}-{to})\
+            </td>\n\
+            <td style=\"width: 10px\">&nbsp;</td>",
+            from = self.pink_num(false, Some(from)),
+            to = self.pink_num(false, Some(to)),
+          )
+        };
+        if 0 < ext_html_num {
+          write_td(
+            (0, ext_html_num - 1),
+            MINT_BACKGROUND_COLOR,
+            (self.html_title, self.html_home_href, self.html_home_img),
+          )?
+        }
+        if ext_html_num < mathbox_num {
+          write_td(
+            (ext_html_num, mathbox_num - 1),
+            PURPLISH_BIBLIO_COLOR,
+            (self.ext_html_title, self.ext_html_home_href, self.ext_html_home_img),
+          )?
+        }
+        if mathbox_num < end {
+          write_td(
+            (mathbox_num, end - 1),
+            SANDBOX_COLOR,
+            ("Users' Mathboxes", "mathbox.html", "_sandbox.gif"),
+          )?
+        }
+        writeln!(w, "</tr></table>")?;
+      }
+
+      let from = page * THMS_PER_PAGE;
+      let to = ((page + 1) * THMS_PER_PAGE).min(self.statements.len());
+      writeln!(
+        w,
+        "<p>\n\
+        <table class=thlist>\n\
+          <caption>\
+            <b>Theorem List for {title} - </b>{from}<b>-</b>{to} &nbsp; \
+            *Has distinct variable group(s)\
+          </caption>\n\
+          <tr><th>Type</th><th>Label</th><th>Description</th></tr>\n\
+          <tr><th colspan=3>Statement</th></tr>\n\
+          <tr class=sp><td colspan=3>&nbsp;</td></tr>",
+        title = self.html_title,
+        from = self.pink_num(false, Some(from)),
+        to = self.pink_num(false, to.checked_sub(1)),
+      )?;
+
+      let mut h_idx = self.headings.partition_point(|h| h.stmt_num < from);
+      let scope = db.scope_result();
+      let (amp, imp);
+      if alt {
+        amp = " &amp;";
+        imp = " <span style=\"font-family: sans-serif\">&#8658;</span>";
+      } else {
+        amp = "<img src=\"amp.gif\" width=12 height=19 alt=\"&amp;\" align=top>";
+        imp = "<img src=\"bigto.gif\" width=15 height=19 alt=\"=&gt;\" align=top>";
+      }
+      for s in from..to {
+        let stmt = self.statements[s];
+        let buf = &stmt.segment().segment.buffer;
+        let desc = stmt.associated_comment().unwrap().comment_contents();
+        let ext = ext_html_num <= s;
+        let mboxness = self.mathbox_lookup(&stmt);
+        let fr = scope.get(stmt.label()).unwrap();
+        writeln!(w)?;
+        while let Some(h) = self.headings.get(h_idx).filter(|h| h.stmt_num == s) {
+          let kind = match h.level {
+            HeadingLevel::MajorPart => "h",
+            HeadingLevel::Section => "b",
+            HeadingLevel::SubSection => "s",
+            HeadingLevel::SubSubSection => "t",
+            HeadingLevel::Database | HeadingLevel::Statement => unreachable!(),
+          };
+          writeln!(
+            w,
+            "<tr class=heading><td colspan=3>\
+              <h3 id=\"mm{stmt_num}{kind}\">{hdr}</h3>",
+            stmt_num = s + 1,
+            hdr = h.header()
+          )?;
+          if !h.content.is_empty() {
+            writeln!(
+              w,
+              "<div class=comment><p>{comment}</div>",
+              comment = self.comment(
+                h.content.as_bytes(),
+                Span::new(0, h.content.len()),
+                alt,
+                ext && mboxness.is_none(),
+              )
+            )?;
+          }
+          writeln!(w, "</td></tr>")?;
+          writeln!(w, "<tr class=sp><td colspan=3>&nbsp;</td></tr>")?;
+          h_idx += 1;
+        }
+        let bgclass = DisplayFn(|f| {
+          if ext {
+            write!(f, " class={}", if s < mathbox_num { "ext" } else { "sbox" })?
+          }
+          Ok(())
+        });
+        let frame = DisplayFn(|f| {
+          let frr = self.frame_renderer(alt, fr);
+          let mut it = fr.hypotheses.iter().filter_map(|hyp| match hyp {
+            Hyp::Essential(_, e) => Some(e),
+            _ => None,
+          });
+          if let Some(mut e) = it.next() {
+            loop {
+              let e2 = it.next();
+              write!(
+                f,
+                "{fmla}&nbsp;&nbsp;&nbsp;{imp}&nbsp;&nbsp;&nbsp;",
+                imp = if e2.is_some() { amp } else { imp },
+                fmla = frr.verify_expr(e),
+              )?;
+              let Some(e2) = e2 else { break };
+              e = e2
+            }
+          }
+          write!(f, "{}", frr.verify_expr(&fr.target))?;
+          Ok(())
+        });
+        let (kind_class, kind) = if stmt.statement_type() == StatementType::Provable {
+          ("th", "Theorem")
+        } else if stmt.label().starts_with(b"ax-") {
+          ("ax", "Axiom")
+        } else if stmt.label().starts_with(b"df-") {
+          ("df", "Definition")
+        } else {
+          ("stx", "Syntax")
+        };
+        writeln!(
+          w,
+          "<tr id=\"{label}\"{bgclass}>\
+            <td class={kind_class}>{kind}</td>\
+            <td style=\"text-align: center\"><a href=\"{label}.html\">{label}</a>{pink}{dv}</td>\
+            <td style=\"text-align: left\">{comment}</td>\
+          </tr>\
+          <tr{bgclass}><td colspan=3 style=\"text-align: center\" class=math>{frame}</td></tr>",
+          label = as_str(stmt.label()),
+          pink = self.pink_num(true, Some(s)),
+          dv = if fr.mandatory_dv.is_empty() { "" } else { "*" },
+          comment = self.comment(buf, desc, alt, ext && mboxness.is_none()),
+        )?;
+        if s + 1 < to {
+          writeln!(w, "<tr class=sp><td colspan=3>&nbsp;</td></tr>")?;
+        }
+      }
+      writeln!(w, "</table>")?;
+    } else {
+      let mut toc_buf = vec![];
+      let mut dtoc_buf = vec![];
+      let mut comment_anchor = {
+        let mut last = usize::MAX;
+        move |b, s| {
+          let b = b && last != s;
+          if b {
+            last = s
+          }
+          let stmts = &self.statements;
+          DisplayFn(move |f| {
+            if b {
+              write!(f, "<a id=\"{}\"></a>", as_str(stmts[s].label()))
+            } else {
+              Ok(())
+            }
+          })
+        }
+      };
+      let mut mbox_anchor = {
+        let mut done = self.mathbox_addr;
+        let stmts = &self.statements;
+        move |s: usize| match done {
+          Some(a) if stmts[s].address() == a => {
+            done = None;
+            format_args!("<a id=\"sandbox:bighdr\"></a>")
+          }
+          _ => format_args!(""),
+        }
+      };
+      for h in &self.headings {
+        let Heading { header, content, level, stmt_num, .. } = *h;
+        let idx = h.idx();
+        let i = level as usize - 1;
+        let url = DisplayFn(|f| {
+          write!(
+            f,
+            "mmtheorems{page}.html#mm{num}",
+            page = stmt_num / THMS_PER_PAGE + 1,
+            num = stmt_num + 1
+          )
+        });
+        let (part, kind) = match level {
+          HeadingLevel::MajorPart => ("PART ", "h"),
+          HeadingLevel::Section => ("", "b"),
+          HeadingLevel::SubSection => ("", "s"),
+          HeadingLevel::SubSubSection => ("", "t"),
+          HeadingLevel::Database | HeadingLevel::Statement => unreachable!(),
+        };
+        let indent = DisplayFn(|f| (0..i).try_for_each(|_| write!(f, "&nbsp; &nbsp; &nbsp; ")));
+        match level {
+          HeadingLevel::MajorPart | HeadingLevel::Section => {
+            let hdr = DisplayFn(|f| write!(f, "{part}{idx}&nbsp;&nbsp;{header}"));
+            writeln!(
+              toc_buf,
+              "{indent}{mbox}\
+              <a href=\"#dtl:{idx}\"><b>{hdr}</b></a><br>",
+              mbox = mbox_anchor(stmt_num),
+            )?;
+            writeln!(
+              dtoc_buf,
+              "{indent}\
+              {comment}<a id=\"dtl:{idx}\" href=\"{url}{kind}\"><b>{mark}{hdr}</b></a><br>",
+              comment = comment_anchor(!content.is_empty(), stmt_num),
+              mark = if content.is_empty() { "" } else { "*" },
+            )?;
+          }
+          HeadingLevel::SubSection | HeadingLevel::SubSubSection => {
+            let hdr = DisplayFn(|f| write!(f, "{idx}&nbsp;&nbsp;{header}"));
+            writeln!(
+              dtoc_buf,
+              "{indent}{comment}\
+              <a href=\"{url}{kind}\">{mark}{hdr}</a> &nbsp; \
+              <a href=\"{label}.html\">{label}</a>{pink}<br>",
+              comment = comment_anchor(!content.is_empty(), stmt_num),
+              mark = if content.is_empty() { "" } else { "*" },
+              label = as_str(self.statements[stmt_num].label()),
+              pink = self.pink_num(true, Some(stmt_num)),
+            )?;
+          }
+          HeadingLevel::Database | HeadingLevel::Statement => unreachable!(),
+        }
+      }
+      writeln!(
+        w,
+        "<p><div style=\"font-weight: bold; text-align: center\">Table of Contents Summary</div>"
+      )?;
+      w.write_all(&toc_buf)?;
+      writeln!(w, "<hr style=\"border: 1px solid gray\">")?;
+      writeln!(
+        w,
+        "<p><div id=\"mmdtoc\" style=\"font-weight: bold; text-align: center\">\n\
+          Detailed Table of Contents<br>\n\
+          (* means the section header has a description)\n\
+        </div>"
+      )?;
+      w.write_all(&dtoc_buf)?;
+      writeln!(w, "<hr style=\"border: 1px solid gray\">")?;
+    }
+    writeln!(
+      w,
+      "<div style=\"text-align: right; font-size: small; font-family: sans-serif; padding: 3px\">\
+        {prev_next}\
+      </div>\n\
+      <hr style=\"border: 1px solid gray\">\n\
+      <div id=\"mmpglst\" style=\"font-weight: bold; text-align: center\">Page List</div>\n\
+      Jump to page: "
+    )?;
+    if page.is_none() {
+      writeln!(w, "Contents&nbsp;")
+    } else {
+      writeln!(w, "<a href=\"mmtheorems.html\">Contents</a>&nbsp;")
+    }?;
+    for p in 0..num_pages {
+      let n = p + 1;
+      if page == Some(p) {
+        write!(w, "{n}")
+      } else {
+        write!(w, "<a href=\"mmtheorems{n}.html\">{n}</a>")
+      }?;
+      writeln!(
+        w,
+        "{from}-{to}",
+        from = self.pink_num(true, Some(p * THMS_PER_PAGE)),
+        to = self.pink_num(false, ((p + 1) * THMS_PER_PAGE).min(end).checked_sub(1)),
+      )?;
+    }
+
+    writeln!(
+      w,
+      "<hr style=\"border: 1px solid gray\">\n\
+        <table style=\"white-space: nowrap; width: 100%\"><tr>\n\
+          <td style=\"width: 25%\">&nbsp;</td>\n\
+          <td style=\"text-align: center; vertical-align: bottom; \
+              font-size: x-small; font-family: Arial,sans-serif\">\
+            Copyright terms: <a href=\"../copyright.html#pd\">Public domain</a>\
+          </td>\n\
+          <td style=\"text-align: right; vertical-align: top; width: 25%; \
+              font-size: small; font-family: sans-serif\">\
+            {prev_next}\
+          </td>\n\
+        </tr></table>\n\
+      </body></html>"
+    )
   }
 }
 

@@ -16,3 +16,4 @@ metamath-knife = { path = "../metamath-knife" }
 rayon = "1.8"
 actix-web = { version = "3.3", optional = true }
 itertools = "0.10"
+# simple_logger = "1.13"
