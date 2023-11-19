@@ -28,7 +28,9 @@ fn main() {
   // simple_logger::SimpleLogger::new().init().unwrap();
   enum Cmd {
     Stmt(String),
-    Thms(String),
+    StmtAll,
+    Thms(usize),
+    ThmsAll,
   }
   let mut iter = std::env::args().skip(1);
   let label = match iter.next().as_deref() {
@@ -42,8 +44,20 @@ fn main() {
           _ => panic!("expected 'gif' or 'uni'"),
         };
         let cmd = match &*iter.next().unwrap() {
-          "stmt" => Cmd::Stmt(iter.next().unwrap()),
-          "thms" => Cmd::Thms(iter.next().unwrap()),
+          "stmt" => {
+            let s = iter.next().unwrap();
+            match &*s {
+              "*" => Cmd::StmtAll,
+              _ => Cmd::Stmt(s),
+            }
+          }
+          "thms" => {
+            let page = iter.next().unwrap();
+            match &*page {
+              "*" => Cmd::ThmsAll,
+              _ => Cmd::Thms(page.parse().expect("expected integer or '*'")),
+            }
+          }
           _ => panic!("expected 'stmt' or 'thms'"),
         };
         cmds.push((alt, cmd))
@@ -60,9 +74,9 @@ fn main() {
   if let Some((file, cmds)) = label {
     let mut db = new_db(file);
     if cmds.iter().any(|(_, cmd)| match cmd {
+      Cmd::StmtAll => true,
       Cmd::Stmt(label) =>
-        label == "*"
-          || db.statement(label.as_bytes()).unwrap().statement_type() == StatementType::Axiom,
+        db.statement(label.as_bytes()).unwrap().statement_type() == StatementType::Axiom,
       _ => false,
     }) {
       db.grammar_pass();
@@ -70,24 +84,19 @@ fn main() {
 
     let mut renderer = Renderer::new(&db);
 
-    if cmds.iter().any(|(_, cmd)| match cmd {
-      Cmd::Stmt(label) => label == "*",
-      Cmd::Thms(_) => true,
-    }) {
+    if cmds.iter().any(|(_, cmd)| matches!(cmd, Cmd::StmtAll | Cmd::Thms(_) | Cmd::ThmsAll)) {
       renderer.prep_mathbox_lookup();
-      renderer.build_statements(cmds.iter().any(|(_, cmd)| matches!(cmd, Cmd::Thms(_))));
+      renderer
+        .build_statements(cmds.iter().any(|(_, cmd)| matches!(cmd, Cmd::Thms(_) | Cmd::ThmsAll)));
     }
 
-    if cmds.iter().any(|(_, cmd)| match cmd {
-      Cmd::Stmt(label) => label == "*",
-      Cmd::Thms(_) => false,
-    }) {
+    if cmds.iter().any(|(_, cmd)| matches!(cmd, Cmd::StmtAll)) {
       renderer.build_used_by();
     }
 
     for (alt, cmd) in cmds {
       match cmd {
-        Cmd::Stmt(label) if label == "*" => {
+        Cmd::StmtAll => {
           let total = renderer.statements.len();
           let done = AtomicU32::new(0);
           let last = RwLock::new(Instant::now());
@@ -109,7 +118,7 @@ fn main() {
           let w = &mut std::io::stdout();
           renderer.show_statement(w, stmt, alt).unwrap()
         }
-        Cmd::Thms(page) if page == "*" => {
+        Cmd::ThmsAll => {
           let num_pages = renderer.num_pages();
           (0..num_pages).into_par_iter().map(Some).chain(rayon::iter::once(None)).for_each(|page| {
             let file = match page {
@@ -124,7 +133,7 @@ fn main() {
         Cmd::Thms(page) => {
           let num_pages = renderer.num_pages();
           let w = &mut std::io::stdout();
-          let page = page.parse::<usize>().expect("expected integer or '*'").checked_sub(1);
+          let page = page.checked_sub(1);
           if let Some(page) = page {
             assert!(
               page * THMS_PER_PAGE < renderer.statements.len(),
@@ -189,12 +198,10 @@ fn run_server(mut args: impl Iterator<Item = String>) {
     rs: &HashMap<String, Renderer<'static>>, db: String, label: String, alt: bool,
   ) -> impl Responder {
     let Some(r) = rs.get(&db) else { return HttpResponse::NotFound().into() };
+    let mut w = vec![];
+    let now = std::time::Instant::now();
     if let Some(page) = theorems_page(r, &label) {
-      let mut w = vec![];
-      let now = std::time::Instant::now();
       r.show_theorems(&mut w, page, r.num_pages(), alt).unwrap();
-      println!("rendered {} in {}ms", label, now.elapsed().as_millis());
-      HttpResponse::Ok().body(w)
     } else {
       let Some(stmt) = r.db.statement(label.as_bytes()) else {
         return HttpResponse::NotFound().into()
@@ -202,12 +209,10 @@ fn run_server(mut args: impl Iterator<Item = String>) {
       if !stmt.is_assertion() {
         return HttpResponse::NotFound().into()
       };
-      let mut w = vec![];
-      let now = std::time::Instant::now();
       r.show_statement(&mut w, stmt, alt).unwrap();
-      println!("rendered {} in {}ms", label, now.elapsed().as_millis());
-      HttpResponse::Ok().body(w)
     }
+    println!("rendered {} in {}ms", label, now.elapsed().as_millis());
+    HttpResponse::Ok().body(w)
   }
 
   #[get("/{db}uni/{label}.html")]

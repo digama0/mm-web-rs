@@ -429,18 +429,16 @@ impl<'a> TokenIter<'a> {
 }
 
 struct Comment<'a, 'b> {
-  buf: &'a [u8],
-  span: Span,
+  buf: &'a str,
   r: &'b Renderer<'a>,
   html_defs: &'b HashMap<&'a [u8], &'a str>,
   html_bibliography: &'a str,
 }
 
 impl<'a> Renderer<'a> {
-  fn comment(&self, buf: &'a [u8], span: Span, alt: bool, ext: bool) -> Comment<'a, '_> {
+  fn comment(&self, buf: &'a str, alt: bool, ext: bool) -> Comment<'a, '_> {
     Comment {
       buf,
-      span,
       r: self,
       html_defs: if alt { &self.alt_html_defs } else { &self.html_defs },
       html_bibliography: if ext { self.ext_html_bibliography } else { self.html_bibliography },
@@ -448,9 +446,13 @@ impl<'a> Renderer<'a> {
   }
 }
 
+fn html_escape(tk: &str) -> String {
+  tk.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
 impl Display for Comment<'_, '_> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let mut parser = CommentParser::new(self.buf, self.span);
+    let mut parser = CommentParser::new(self.buf.as_bytes(), Span::new(0, self.buf.len()));
     let mut htmls = 0;
     let mut trim_prev_ws = true;
     while let Some(item) = parser.next() {
@@ -471,7 +473,7 @@ impl Display for Comment<'_, '_> {
           if htmls == 0 {
             write!(f, "{s}")?
           } else {
-            write!(f, "{}", s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;"))?
+            write!(f, "{}", html_escape(s))?
           }
         }
         CommentItem::LineBreak(_) => {
@@ -486,7 +488,7 @@ impl Display for Comment<'_, '_> {
         CommentItem::MathToken(sp) => {
           out.clear();
           parser.unescape_math(sp, &mut out);
-          write!(f, "{}", self.html_defs[&*out])?
+          write!(f, "{}", self.html_defs[&*out].trim())?
         }
         CommentItem::Label(_, sp) => {
           trim_prev_ws = true;
@@ -510,17 +512,14 @@ impl Display for Comment<'_, '_> {
         CommentItem::StartSubscript(_) => write!(f, "<sub><font size=\"-1\">")?,
         CommentItem::EndSubscript(_) => write!(f, "</font></sub>")?,
         CommentItem::StartItalic(_) => write!(f, "<i>")?,
-        CommentItem::EndItalic(_) => {
-          trim_prev_ws = true;
-          write!(f, "</i>")?
-        }
+        CommentItem::EndItalic(_) => write!(f, "</i>")?,
         CommentItem::BibTag(sp) => {
           trim_prev_ws = false;
           write!(
             f,
             "[<a href=\"{file}#{tag}\">{tag}</a>]",
             file = self.html_bibliography,
-            tag = as_str(sp.as_ref(self.buf))
+            tag = as_str(sp.as_ref(self.buf.as_bytes()))
           )?
         }
       }
@@ -621,12 +620,8 @@ impl<'a> Renderer<'a> {
     let label = stmt.label();
     let s_label = as_str(label);
     let seg = stmt.segment().segment;
-    let comment = self.comment(
-      &seg.buffer,
-      stmt.associated_comment().unwrap().comment_contents(),
-      alt,
-      ext && mboxness.is_none(),
-    );
+    let comment = stmt.associated_comment().unwrap().comment_contents().as_ref(&seg.buffer);
+    let comment = self.comment(as_str(comment).trim(), alt, ext && mboxness.is_none());
 
     let cur = stmt.address();
     let (prev, wrap_prev) = match db.statements_range_address(..cur).rfind(|s| s.is_assertion()) {
@@ -1218,6 +1213,7 @@ impl<'a> Renderer<'a> {
           border-spacing: 0; margin: auto; background-color: {bgcolor}; \
           border: outset 1px {border_color}; \
         }}\n\
+        hr {{ border: 1px solid gray; border-bottom: 0 }}\n\
         .thlist td, .thlist th {{ padding: 3px; border: inset 1px {border_color}; }}\n\
         .sp {{ background-color: white; }}\n\
         .sp td {{ font-size: x-small; }}\n\
@@ -1227,12 +1223,13 @@ impl<'a> Renderer<'a> {
         .df {{ white-space: nowrap; font-weight: bold; color: blue }}\n\
         .comment p {{ margin-bottom: 0 }}\n\
         .heading {{ background-color: #FFFFF2 }}\n\
-        .heading h3 {{ font-size: large; text-align: center; margin: 0 }}\n\
+        .heading h1, .heading h2 {{ font-size: large; text-align: center; margin: 0 }}\n\
+        .heading h3, .heading h4 {{ font-size: medium; text-align: center; margin: 0 }}\n\
         .ext {{ background-color: {PURPLISH_BIBLIO_COLOR} }}\n\
         .sbox {{ background-color: {SANDBOX_COLOR} }}\n\
         </style>\n\
         {css}\n\
-        <title>{page} of Theorem List - {title}</title>\n\
+        <title>P. {page} of Theorem List - {title}</title>\n\
         <link rel=\"shortcut icon\" href=\"favicon.ico\" type=\"image/x-icon\">\n\
       </head><body style=\"background-color: #FFFFFF\">\n\
         <table class=top style=\"width: 100%\">\n\
@@ -1269,7 +1266,7 @@ impl<'a> Renderer<'a> {
             </td>\n\
           </tr>\n\
         </table>\n\
-        <hr style=\"border: 1px solid gray\">",
+        <hr>",
       bgcolor = MINT_BACKGROUND_COLOR,
       border_color = GRAY_BORDER_COLOR,
       css = &*self.html_css,
@@ -1396,17 +1393,17 @@ impl<'a> Renderer<'a> {
         let fr = scope.get(stmt.label()).unwrap();
         writeln!(w)?;
         while let Some(h) = self.headings.get(h_idx).filter(|h| h.stmt_num == s) {
-          let kind = match h.level {
-            HeadingLevel::MajorPart => "h",
-            HeadingLevel::Section => "b",
-            HeadingLevel::SubSection => "s",
-            HeadingLevel::SubSubSection => "t",
+          let (tag, kind) = match h.level {
+            HeadingLevel::MajorPart => ("h1", "h"),
+            HeadingLevel::Section => ("h2", "b"),
+            HeadingLevel::SubSection => ("h3", "s"),
+            HeadingLevel::SubSubSection => ("h4", "t"),
             HeadingLevel::Database | HeadingLevel::Statement => unreachable!(),
           };
           writeln!(
             w,
             "<tr class=heading><td colspan=3>\
-              <h3 id=\"mm{stmt_num}{kind}\">{hdr}</h3>",
+              <{tag} id=\"mm{stmt_num}{kind}\">{hdr}</{tag}>",
             stmt_num = s + 1,
             hdr = h.header()
           )?;
@@ -1414,12 +1411,7 @@ impl<'a> Renderer<'a> {
             writeln!(
               w,
               "<div class=comment><p>{comment}</div>",
-              comment = self.comment(
-                h.content.as_bytes(),
-                Span::new(0, h.content.len()),
-                alt,
-                ext && mboxness.is_none(),
-              )
+              comment = self.comment(h.content, alt, ext && mboxness.is_none(),)
             )?;
           }
           writeln!(w, "</td></tr>")?;
@@ -1468,13 +1460,13 @@ impl<'a> Renderer<'a> {
           "<tr id=\"{label}\"{bgclass}>\
             <td class={kind_class}>{kind}</td>\
             <td style=\"text-align: center\"><a href=\"{label}.html\">{label}</a>{pink}{dv}</td>\
-            <td style=\"text-align: left\">{comment}</td>\
+            <td class=comment style=\"text-align: left\">{comment}</td>\
           </tr>\
           <tr{bgclass}><td colspan=3 style=\"text-align: center\" class=math>{frame}</td></tr>",
           label = as_str(stmt.label()),
           pink = self.pink_num(true, Some(s)),
           dv = if fr.mandatory_dv.is_empty() { "" } else { "*" },
-          comment = self.comment(buf, desc, alt, ext && mboxness.is_none()),
+          comment = self.comment(as_str(desc.as_ref(buf)).trim(), alt, ext && mboxness.is_none()),
         )?;
         if s + 1 < to {
           writeln!(w, "<tr class=sp><td colspan=3>&nbsp;</td></tr>")?;
@@ -1570,7 +1562,7 @@ impl<'a> Renderer<'a> {
         "<p><div style=\"font-weight: bold; text-align: center\">Table of Contents Summary</div>"
       )?;
       w.write_all(&toc_buf)?;
-      writeln!(w, "<hr style=\"border: 1px solid gray\">")?;
+      writeln!(w, "<hr>")?;
       writeln!(
         w,
         "<p><div id=\"mmdtoc\" style=\"font-weight: bold; text-align: center\">\n\
@@ -1579,14 +1571,14 @@ impl<'a> Renderer<'a> {
         </div>"
       )?;
       w.write_all(&dtoc_buf)?;
-      writeln!(w, "<hr style=\"border: 1px solid gray\">")?;
+      writeln!(w, "<hr>")?;
     }
     writeln!(
       w,
       "<div style=\"text-align: right; font-size: small; font-family: sans-serif; padding: 3px\">\
         {prev_next}\
       </div>\n\
-      <hr style=\"border: 1px solid gray\">\n\
+      <hr>\n\
       <div id=\"mmpglst\" style=\"font-weight: bold; text-align: center\">Page List</div>\n\
       Jump to page: "
     )?;
@@ -1612,7 +1604,7 @@ impl<'a> Renderer<'a> {
 
     writeln!(
       w,
-      "<hr style=\"border: 1px solid gray\">\n\
+      "<hr>\n\
         <table style=\"white-space: nowrap; width: 100%\"><tr>\n\
           <td style=\"width: 25%\">&nbsp;</td>\n\
           <td style=\"text-align: center; vertical-align: bottom; \
