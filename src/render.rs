@@ -1,4 +1,4 @@
-use crate::THMS_PER_PAGE;
+use crate::{Extra, THMS_PER_PAGE};
 use itertools::Itertools;
 use metamath_knife::{
   comment_parser::{CommentItem, CommentParser},
@@ -574,6 +574,54 @@ impl Display for ExprHtml<'_> {
 }
 
 impl<'a> Renderer<'a> {
+  fn oneline_statement(&self, alt: bool, fr: &'a Frame) -> impl Display + '_ {
+    let (amp, imp);
+    if alt {
+      amp = " &amp;";
+      imp = " <span style=\"font-family: sans-serif\">&#8658;</span>";
+    } else {
+      amp = "<img src=\"amp.gif\" width=12 height=19 alt=\"&amp;\" align=top>";
+      imp = "<img src=\"bigto.gif\" width=15 height=19 alt=\"=&gt;\" align=top>";
+    }
+    let frr = self.frame_renderer(alt, fr);
+    DisplayFn(move |f| {
+      let mut it = fr.hypotheses.iter().filter_map(|hyp| match hyp {
+        Hyp::Essential(_, e) => Some(e),
+        _ => None,
+      });
+      if let Some(mut e) = it.next() {
+        loop {
+          let e2 = it.next();
+          write!(
+            f,
+            "{fmla}&nbsp;&nbsp;&nbsp;{imp}&nbsp;&nbsp;&nbsp;",
+            imp = if e2.is_some() { amp } else { imp },
+            fmla = frr.verify_expr(e),
+          )?;
+          let Some(e2) = e2 else { break };
+          e = e2
+        }
+      }
+      write!(f, "{}", frr.verify_expr(&fr.target))?;
+      Ok(())
+    })
+  }
+}
+
+const FOOTER: &str = "\
+  <table style=\"border: none; width: 100%\"><tr>\n\
+    <td style=\"width: 25%\">&nbsp;</td>\n\
+    <td style=\"text-align: center; vertical-align: bottom; \
+      font-size: x-small; font-family: sans-serif\">\
+      Copyright terms: <a href=\"../copyright.html#pd\">Public domain</a>\n\
+    </td>\n\
+    <td style=\"text-align: right; vertical-align: bottom; \
+      width: 25%; font-size: x-small; font-family: sans-serif\">\
+      <a href=\"http://validator.w3.org/check?uri=referer\">W3C validator</a>\
+    </td>\n\
+  </tr></table>\n";
+
+impl<'a> Renderer<'a> {
   pub(crate) fn show_statement<W: Write>(
     &self, w: &mut W, stmt: StatementRef<'a>, alt: bool,
   ) -> io::Result<()> {
@@ -643,7 +691,7 @@ impl<'a> Renderer<'a> {
         <meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\n\
         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n\
         <style>\n\
-        img {{ border: 0; margin-bottom: -4px }}\n\
+        img {{ border: 0; margin-bottom: -4px; }}\n\
         .steps {{ \
           text-align: center; border-spacing: 0; background-color: {bgcolor}; \
           margin: auto; \
@@ -676,7 +724,7 @@ impl<'a> Renderer<'a> {
               </a>\n\
             </td>\n\
             <td style=\"padding: 0; text-align: center; vertical-align: top\" colspan=2>\n\
-              <b style=\"font-size: xx-large; color: {title_color}\">{title}</b>\n\
+              <span style=\"font-size: xx-large\">{title}</span>\n\
             </td>\n\
             <td style=\"padding: 0; text-align: right; vertical-align: top; width: 25%; \
                 font-size: x-small; font-family: sans-serif\">\n\
@@ -1001,7 +1049,7 @@ impl<'a> Renderer<'a> {
               w,
               "<td><a href=\"{ref_label}.html\" title=\"{descr}\">{ref_label}</a>{pink}</td>",
               ref_label = as_str(ref_stmt.label()),
-              descr = as_str(&abbrev_desc(ref_stmt)).replace('\"', "'"),
+              descr = as_str(&abbrev_desc(ref_stmt, 87, false)).replace('\"', "'"),
               pink = self.pink_num(true, Some(self.pink_numbers[ref_stmt.label()])),
             )?;
           } else {
@@ -1153,21 +1201,7 @@ impl<'a> Renderer<'a> {
     }
     writeln!(w, "</table>")?;
 
-    writeln!(
-      w,
-      "<table style=\"border: none; width: 100%\"><tr>\n\
-        <td style=\"width: 25%\">&nbsp;</td>\n\
-        <td style=\"text-align: center; vertical-align: bottom; \
-          font-size: x-small; font-family: sans-serif\">\
-          Copyright terms: <a href=\"../copyright.html#pd\">Public domain</a>\n\
-        </td>\n\
-        <td style=\"text-align: right; vertical-align: bottom; \
-          width: 25%; font-size: x-small; font-family: sans-serif\">\
-          <a href=\"http://validator.w3.org/check?uri=referer\">W3C validator</a>\
-        </td>\n\
-      </tr></table>"
-    )?;
-    writeln!(w, "</body></html>")
+    writeln!(w, "{FOOTER}</body></html>")
   }
 
   pub(crate) fn show_theorems<W: Write>(
@@ -1205,7 +1239,7 @@ impl<'a> Renderer<'a> {
         <meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\n\
         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n\
         <style>\n\
-        img {{ border: 0; margin-bottom: -4px }}\n\
+        img {{ border: 0; margin-bottom: -4px; }}\n\
         .r {{ font-family: \"Arial Narrow\"; font-size: x-small; }}\n\
         .top td {{ padding: 1px; }}\n\
         .color-key td {{ padding: 5px; }}\n\
@@ -1213,20 +1247,21 @@ impl<'a> Renderer<'a> {
           border-spacing: 0; margin: auto; background-color: {bgcolor}; \
           border: outset 1px {border_color}; \
         }}\n\
-        hr {{ border: 1px solid gray; border-bottom: 0 }}\n\
+        .title {{ font-weight: bold; color: {title_color}; }}\n\
+        hr {{ border: 1px solid gray; border-bottom: 0; }}\n\
         .thlist td, .thlist th {{ padding: 3px; border: inset 1px {border_color}; }}\n\
         .sp {{ background-color: white; }}\n\
         .sp td {{ font-size: x-small; }}\n\
         .th {{ white-space: nowrap; }}\n\
-        .stx {{ white-space: nowrap; font-weight: bold; color: #00CC00 }}\n\
-        .ax {{ white-space: nowrap; font-weight: bold; color: red }}\n\
-        .df {{ white-space: nowrap; font-weight: bold; color: blue }}\n\
-        .comment p {{ margin-bottom: 0 }}\n\
-        .heading {{ background-color: #FFFFF2 }}\n\
-        .heading h1, .heading h2 {{ font-size: large; text-align: center; margin: 0 }}\n\
-        .heading h3, .heading h4 {{ font-size: medium; text-align: center; margin: 0 }}\n\
-        .ext {{ background-color: {PURPLISH_BIBLIO_COLOR} }}\n\
-        .sbox {{ background-color: {SANDBOX_COLOR} }}\n\
+        .stx {{ white-space: nowrap; font-weight: bold; color: #00CC00; }}\n\
+        .ax {{ white-space: nowrap; font-weight: bold; color: red; }}\n\
+        .df {{ white-space: nowrap; font-weight: bold; color: blue; }}\n\
+        .comment p {{ margin-bottom: 0; }}\n\
+        .heading {{ background-color: #FFFFF2; }}\n\
+        .heading h1, .heading h2 {{ font-size: large; text-align: center; margin: 0; }}\n\
+        .heading h3, .heading h4 {{ font-size: medium; text-align: center; margin: 0; }}\n\
+        .ext {{ background-color: {PURPLISH_BIBLIO_COLOR}; }}\n\
+        .sbox {{ background-color: {SANDBOX_COLOR}; }}\n\
         </style>\n\
         {css}\n\
         <title>P. {page} of Theorem List - {title}</title>\n\
@@ -1238,11 +1273,9 @@ impl<'a> Renderer<'a> {
                 font-size: x-small; font-family: sans-serif\" rowspan=2>\
               {html_home}\
             </td>\n\
-            <td style=\"text-align: center; white-space: nowrap\" rowspan=2>\n\
-              <b style=\"font-size: xx-large; color: {title_color}\">{title}</b><br>\n\
-              <b style=\"font-size: x-large; color: {title_color}\">\
-                Theorem List ({subtitle})\
-              </b>\n\
+            <td class=title style=\"text-align: center; white-space: nowrap\" rowspan=2>\n\
+              <span style=\"font-size: xx-large\">{title}</span><br>\n\
+              <span style=\"font-size: x-large\">Theorem List ({subtitle})</span>\n\
             </td>\n\
             <td style=\"text-align: right; vertical-align: top; white-space: nowrap; \
                 width: 25%; font-size: small; font-family: sans-serif\">\n\
@@ -1260,7 +1293,7 @@ impl<'a> Renderer<'a> {
               <a href=\"../index.html\">Metamath Home Page</a>&nbsp; &gt; &nbsp;\
               <a href=\"{bib_href}\">{title_abbr} Page</a>&nbsp; &gt; &nbsp;\
               {top_thm_link}{mmrecent} &nbsp; &nbsp; &nbsp;\n\
-              <b style=\"color: {title_color}\"> This page:</b>\n\
+              <span class=title> This page:</span>\n\
               {dtoc_link}\
               <a href=\"#mmpglst\">Page List</a>\n\
             </td>\n\
@@ -1376,14 +1409,6 @@ impl<'a> Renderer<'a> {
 
       let mut h_idx = self.headings.partition_point(|h| h.stmt_num < from);
       let scope = db.scope_result();
-      let (amp, imp);
-      if alt {
-        amp = " &amp;";
-        imp = " <span style=\"font-family: sans-serif\">&#8658;</span>";
-      } else {
-        amp = "<img src=\"amp.gif\" width=12 height=19 alt=\"&amp;\" align=top>";
-        imp = "<img src=\"bigto.gif\" width=15 height=19 alt=\"=&gt;\" align=top>";
-      }
       for s in from..to {
         let stmt = self.statements[s];
         let buf = &stmt.segment().segment.buffer;
@@ -1424,28 +1449,6 @@ impl<'a> Renderer<'a> {
           }
           Ok(())
         });
-        let frame = DisplayFn(|f| {
-          let frr = self.frame_renderer(alt, fr);
-          let mut it = fr.hypotheses.iter().filter_map(|hyp| match hyp {
-            Hyp::Essential(_, e) => Some(e),
-            _ => None,
-          });
-          if let Some(mut e) = it.next() {
-            loop {
-              let e2 = it.next();
-              write!(
-                f,
-                "{fmla}&nbsp;&nbsp;&nbsp;{imp}&nbsp;&nbsp;&nbsp;",
-                imp = if e2.is_some() { amp } else { imp },
-                fmla = frr.verify_expr(e),
-              )?;
-              let Some(e2) = e2 else { break };
-              e = e2
-            }
-          }
-          write!(f, "{}", frr.verify_expr(&fr.target))?;
-          Ok(())
-        });
         let (kind_class, kind) = if stmt.statement_type() == StatementType::Provable {
           ("th", "Theorem")
         } else if stmt.label().starts_with(b"ax-") {
@@ -1467,6 +1470,7 @@ impl<'a> Renderer<'a> {
           pink = self.pink_num(true, Some(s)),
           dv = if fr.mandatory_dv.is_empty() { "" } else { "*" },
           comment = self.comment(as_str(desc.as_ref(buf)).trim(), alt, ext && mboxness.is_none()),
+          frame = self.oneline_statement(alt, fr),
         )?;
         if s + 1 < to {
           writeln!(w, "<tr class=sp><td colspan=3>&nbsp;</td></tr>")?;
@@ -1619,33 +1623,217 @@ impl<'a> Renderer<'a> {
       </body></html>"
     )
   }
+
+  pub(crate) fn show_extra<W: Write>(&self, w: &mut W, extra: Extra, alt: bool) -> io::Result<()> {
+    let db = self.db;
+    let label = extra.label();
+    writeln!(
+      w,
+      "<!DOCTYPE html>\n\
+      <html lang=\"en-us\"><head>\n\
+        <meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\">\n\
+        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n\
+        <style>\n\
+        img {{ border: 0; margin-bottom: -4px; }}\n\
+        .r {{ font-family: \"Arial Narrow\"; font-size: x-small; }}\n\
+        .main {{ \
+          text-align: center; border-spacing: 0; background-color: {bgcolor}; \
+          margin: auto; \
+          border: outset 1px {border_color}; \
+        }}\n\
+        .main td, .main th {{ border: inset 1px {border_color}; }}\n\
+        .main th {{ text-align: center; }}\n\
+        .main td {{ text-align: left; }}\n\
+        .title {{ font-weight: bold; color: {title_color}; }}\n\
+        hr {{ border-style: solid; border-top: 1px; }}\n\
+        .ext {{ background-color: {PURPLISH_BIBLIO_COLOR}; }}\n\
+        .sbox {{ background-color: {SANDBOX_COLOR}; }}\n\
+        </style>\n\
+        {css}\n\
+        <title>{label} - {title}</title>\n\
+        <link rel=\"shortcut icon\" href=\"favicon.ico\" type=\"image/x-icon\">\n\
+      </head><body style=\"background-color: #FFFFFF\">\n\
+        <table style=\"border-spacing: 0; width: 100%\">\n\
+          <tr>\n\
+            <td style=\"padding: 0; text-align: left; vertical-align: top; width: 25%\">\n\
+              <a href=\"{home_href}\">\n\
+                <img src=\"{home_img}\" alt=\"{title_abbr}\" title=\"{title_abbr}\" \
+                  height=32 width=32 style=\"vertical-align: top; margin-bottom: 0px\">\n\
+              </a>\n\
+            </td>\n\
+            <td style=\"padding: 0; text-align: center; vertical-align: top\" colspan=2>\n\
+              <span class=title style=\"font-size: xx-large\">{title}</span>\n\
+            </td>\n\
+            <td style=\"padding: 0; text-align: right; vertical-align: top; width: 25%; \
+                font-size: x-small; font-family: sans-serif\">\n\
+              This is the {this_name} version.<br>\n\
+              <a href=\"{other_dir}{label}.html\">Change to {other_name} version</a>\n\
+            </td>\n\
+          </tr>\n\
+        </table>\n\
+        <hr>",
+      border_color = GRAY_BORDER_COLOR,
+      bgcolor = MINT_BACKGROUND_COLOR,
+      css = &*self.html_css,
+      title = self.html_title,
+      title_abbr = self.html_title_abbr,
+      home_href = self.html_home_href,
+      home_img = self.html_home_img,
+      title_color = GREEN_TITLE_COLOR,
+      this_name = if alt { "Unicode" } else { "GIF" },
+      other_name = if alt { "GIF" } else { "Unicode" },
+      other_dir = if alt { self.html_dir } else { self.alt_html_dir }
+    )?;
+
+    match extra {
+      Extra::Ascii => {
+        writeln!(
+          w,
+          "<div class=title style=\"text-align: center; font-weight: bold\">\
+            Symbol to ASCII Correspondence for Text-Only Browsers \
+            (in order of appearance in $c and $v statements in the database)\
+          </div>\n\
+          <p>\
+          <table class=main>\n\
+            <tr><td><b>Symbol</b></td><td><b>ASCII</b></td></tr>"
+        )?;
+        let html_defs = if alt { &self.alt_html_defs } else { &self.html_defs };
+        let mut used = HashSet::new();
+        for stmt in db.statements() {
+          if matches!(stmt.statement_type(), StatementType::Constant | StatementType::Variable) {
+            for tk in stmt.math_iter().map(|tk| tk.slice) {
+              if used.insert(tk) {
+                writeln!(
+                  w,
+                  "<tr><td class=math>{}</td><td><tt>{}</tt></td></tr>",
+                  html_defs[tk],
+                  html_escape(as_str(tk))
+                )?
+              }
+            }
+          }
+        }
+      }
+      Extra::Definitions | Extra::TheoremsAll => {
+        let (desc, expr, tdclass, stype) = match extra {
+          Extra::Definitions => (
+            "List of Syntax, Axioms (<span class=title>ax-</span>) and \
+            Definitions (<span class=title>df-</span>)",
+            "Expression (see link for any distinct variable requirements)",
+            " class=math",
+            StatementType::Axiom,
+          ),
+          Extra::TheoremsAll => ("List of Theorems", "Description", "", StatementType::Provable),
+          _ => unreachable!(),
+        };
+        writeln!(
+          w,
+          "<table class=main>\n\
+            <caption style=\"text-align: center; font-weight: bold\">{desc}</caption>\n\
+            <tr><td><b>Ref</b></td><td><b>{expr}</b></td></tr>"
+        )?;
+        let end = self.statements.len();
+        let get_pink = |addr| Some(*self.pink_numbers.get(db.statement_by_address(addr).label())?);
+        let mathbox_num = self.mathbox_addr.and_then(get_pink).unwrap_or(end);
+        let ext_html_num =
+          self.ext_html_addr.and_then(get_pink).unwrap_or(mathbox_num).min(mathbox_num);
+        let scope = db.scope_result();
+        let (mut first_ext, mut first_mbox) = (false, false);
+        let mut bgclass = "";
+        for (s, stmt) in self.statements.iter().enumerate() {
+          if stmt.statement_type() == stype {
+            let write_header = |w: &mut W, bgclass: &str, title: &str| {
+              writeln!(
+                w,
+                "<tr{bgclass}><td colspan=2 style=\"text-align: center\">\
+                    The list of syntax, axioms (<span class=title>ax-</span>) and \
+                    definitions (<span class=title>df-</span>) for the \
+                    <span class=title style=\"font-weight: bold\">{title}</span> starts here\
+                  </td></tr>"
+              )
+            };
+            if ext_html_num <= s {
+              if mathbox_num <= s {
+                if !first_mbox {
+                  first_mbox = true;
+                  bgclass = " class=sbox";
+                  write_header(w, bgclass, "User Mathboxes")?;
+                }
+              } else if !first_ext {
+                first_ext = true;
+                bgclass = " class=ext";
+                write_header(w, bgclass, self.ext_html_title)?;
+              }
+            }
+            let body = DisplayFn(|f| match extra {
+              Extra::Definitions => {
+                let fr = scope.get(stmt.label()).unwrap();
+                self.oneline_statement(alt, fr).fmt(f)
+              }
+              Extra::TheoremsAll =>
+                f.write_str(&html_escape(as_str(&abbrev_desc(*stmt, 29, true)))),
+              _ => unreachable!(),
+            });
+            writeln!(
+              w,
+              "<tr{bgclass}>\
+                <td><a href=\"{label}.html\">{label}</a>{pink}</td>\
+                <td{tdclass}>{body}</td>\
+              </tr>",
+              label = as_str(stmt.label()),
+              pink = self.pink_num(true, Some(s)),
+            )?
+          }
+        }
+      }
+    }
+    writeln!(w, "</table>\n{FOOTER}</body></html>")
+  }
 }
 
-fn abbrev_desc(stmt: StatementRef<'_>) -> Vec<u8> {
-  const MAX_DESCR_LEN: usize = 87;
-  let comment = match stmt.associated_comment() {
-    Some(comment) => comment,
-    None => return vec![],
-  };
+fn abbrev_desc(stmt: StatementRef<'_>, max_len: usize, break_mid_word: bool) -> Vec<u8> {
+  let Some(comment) = stmt.associated_comment() else { return vec![] };
   let span = comment.span();
   let mut comment = &comment.segment().buffer[(span.start + 2) as usize..(span.end - 2) as usize];
+  match comment.iter().position(|c| !c.is_ascii_whitespace()) {
+    Some(j) => comment = &comment[j..],
+    None => return vec![],
+  }
   let mut out = vec![];
-  let truncated = loop {
-    match comment.iter().position(|c| !c.is_ascii_whitespace()) {
-      Some(j) => comment = &comment[j..],
-      None => break false,
+  let i = comment.iter().position(|c| c.is_ascii_whitespace()).unwrap_or(comment.len());
+  let truncated = if i > max_len {
+    if break_mid_word {
+      out.extend_from_slice(&comment[..i]);
     }
-    let i = comment.iter().position(|c| c.is_ascii_whitespace()).unwrap_or(comment.len());
-    if out.len() + i >= MAX_DESCR_LEN {
-      break true
-    }
-    out.push(b' ');
+    true
+  } else {
     out.extend_from_slice(&comment[..i]);
     comment = &comment[i + 1..];
+    loop {
+      match comment.iter().position(|c| !c.is_ascii_whitespace()) {
+        Some(j) => comment = &comment[j..],
+        None => break false,
+      }
+      let i = comment.iter().position(|c| c.is_ascii_whitespace()).unwrap_or(comment.len());
+      if out.len() + i >= max_len {
+        if break_mid_word {
+          out.push(b' ');
+          out.extend_from_slice(&comment[..i]);
+        }
+        break true
+      }
+      out.push(b' ');
+      out.extend_from_slice(&comment[..i]);
+      comment = &comment[i + 1..];
+    }
   };
   if truncated {
-    if out.len() > MAX_DESCR_LEN - 3 {
-      let max = out[..=MAX_DESCR_LEN - 3].iter().rposition(|&c| c == b' ').unwrap_or(0);
+    if out.len() > max_len - 3 {
+      let max = if break_mid_word {
+        max_len - 3
+      } else {
+        out[..=max_len - 3].iter().rposition(|&c| c == b' ').unwrap_or(0)
+      };
       out.truncate(max);
     }
     if !out.is_empty() {

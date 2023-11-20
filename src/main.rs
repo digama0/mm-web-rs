@@ -6,6 +6,7 @@ use render::Renderer;
 use std::{
   fs::File,
   io::BufWriter,
+  str::FromStr,
   sync::{atomic::AtomicU32, RwLock},
   time::Instant,
 };
@@ -24,6 +25,34 @@ fn new_db(file: String) -> Database {
 
 const THMS_PER_PAGE: usize = 100;
 
+enum Extra {
+  Ascii,
+  Definitions,
+  TheoremsAll,
+}
+impl Extra {
+  fn label(&self) -> &'static str {
+    match self {
+      Extra::Ascii => "mmascii",
+      Extra::Definitions => "mmdefinitions",
+      Extra::TheoremsAll => "mmtheoremsall",
+    }
+  }
+}
+
+impl FromStr for Extra {
+  type Err = ();
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s {
+      "mmascii" => Ok(Extra::Ascii),
+      "mmdefinitions" => Ok(Extra::Definitions),
+      "mmtheoremsall" => Ok(Extra::TheoremsAll),
+      _ => Err(()),
+    }
+  }
+}
+
 fn main() {
   // simple_logger::SimpleLogger::new().init().unwrap();
   enum Cmd {
@@ -31,6 +60,8 @@ fn main() {
     StmtAll,
     Thms(usize),
     ThmsAll,
+    Extra(Extra),
+    ExtraAll,
   }
   let mut iter = std::env::args().skip(1);
   let label = match iter.next().as_deref() {
@@ -56,6 +87,16 @@ fn main() {
             match &*page {
               "*" => Cmd::ThmsAll,
               _ => Cmd::Thms(page.parse().expect("expected integer or '*'")),
+            }
+          }
+          "extra" => {
+            let page = iter.next().unwrap();
+            if page == "*" {
+              Cmd::ExtraAll
+            } else {
+              Cmd::Extra(
+                page.parse().expect("expected 'mmascii', 'mmdefinitions', 'mmtheoremsall', or '*'"),
+              )
             }
           }
           _ => panic!("expected 'stmt' or 'thms'"),
@@ -84,7 +125,16 @@ fn main() {
 
     let mut renderer = Renderer::new(&db);
 
-    if cmds.iter().any(|(_, cmd)| matches!(cmd, Cmd::StmtAll | Cmd::Thms(_) | Cmd::ThmsAll)) {
+    if cmds.iter().any(|(_, cmd)| {
+      matches!(
+        cmd,
+        Cmd::StmtAll
+          | Cmd::Thms(_)
+          | Cmd::ThmsAll
+          | Cmd::Extra(Extra::Definitions | Extra::TheoremsAll)
+          | Cmd::ExtraAll
+      )
+    }) {
       renderer.prep_mathbox_lookup();
       renderer
         .build_statements(cmds.iter().any(|(_, cmd)| matches!(cmd, Cmd::Thms(_) | Cmd::ThmsAll)));
@@ -142,6 +192,15 @@ fn main() {
           }
           renderer.show_theorems(w, page, num_pages, alt).unwrap()
         }
+        Cmd::Extra(extra) => {
+          let w = &mut std::io::stdout();
+          renderer.show_extra(w, extra, alt).unwrap();
+        }
+        Cmd::ExtraAll =>
+          [Extra::Ascii, Extra::Definitions, Extra::TheoremsAll].into_par_iter().for_each(|extra| {
+            let w = &mut BufWriter::new(File::create(format!("{}.html", extra.label())).unwrap());
+            renderer.show_extra(w, extra, alt).unwrap();
+          }),
       }
     }
   } else {
@@ -202,6 +261,8 @@ fn run_server(mut args: impl Iterator<Item = String>) {
     let now = std::time::Instant::now();
     if let Some(page) = theorems_page(r, &label) {
       r.show_theorems(&mut w, page, r.num_pages(), alt).unwrap();
+    } else if let Ok(extra) = label.parse() {
+      r.show_extra(&mut w, extra, alt).unwrap();
     } else {
       let Some(stmt) = r.db.statement(label.as_bytes()) else {
         return HttpResponse::NotFound().into()
