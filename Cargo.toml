@@ -9,10 +9,11 @@ edition = "2021"
 opt-level = 2
 
 [features]
+default = ["server"]
 server = ["actix-web"]
 
 [dependencies]
-metamath-knife = { path = "../metamath-knife" }
+metamath-rs = { path = "../metamath-knife/metamath-rs" }
 rayon = "1.8"
 actix-web = { version = "3.3", optional = true }
 itertools = "0.10"

@@ -1,6 +1,6 @@
 mod render;
 
-use metamath_knife::{as_str, database::DbOptions, Database, StatementType};
+use metamath_rs::{as_str, database::DbOptions, Database, StatementType};
 use rayon::prelude::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use render::Renderer;
 use std::{

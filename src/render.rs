@@ -1,6 +1,6 @@
 use crate::{Extra, THMS_PER_PAGE};
 use itertools::Itertools;
-use metamath_knife::{
+use metamath_rs::{
   comment_parser::{CommentItem, CommentParser},
   nameck::{Atom, NameReader, Nameset},
   parser::HeadingLevel,
