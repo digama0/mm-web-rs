@@ -1,7 +1,7 @@
 use crate::{Extra, THMS_PER_PAGE};
 use itertools::Itertools;
 use metamath_rs::{
-  comment_parser::{CommentItem, CommentParser},
+  comment_parser::{CommentItem, CommentParser, Date, Parenthetical},
   nameck::{Atom, NameReader, Nameset},
   parser::HeadingLevel,
   proof::ProofTreeArray,
@@ -10,7 +10,7 @@ use metamath_rs::{
   *,
 };
 use std::{
-  collections::{HashMap, HashSet},
+  collections::{BinaryHeap, HashMap, HashSet},
   fmt::Display,
   io::{self, Write},
   ops::Bound,
@@ -92,6 +92,8 @@ pub(crate) struct Renderer<'a> {
   used_by: Option<HashMap<&'a [u8], Vec<StatementAddress>>>,
   pub(crate) statements: Vec<StatementRef<'a>>,
   headings: Vec<Heading<'a>>,
+  pub(crate) recent: Vec<(Date, usize)>,
+  recent_templates: Vec<Template<'a>>,
 }
 
 impl<'a> Renderer<'a> {
@@ -188,6 +190,8 @@ impl<'a> Renderer<'a> {
       used_by: None,
       statements: vec![],
       headings: Default::default(),
+      recent: vec![],
+      recent_templates: vec![],
     }
   }
 
@@ -272,6 +276,32 @@ impl<'a> Renderer<'a> {
     } else {
       self.statements.extend(self.db.statements().filter(|s| s.is_assertion()))
     }
+  }
+
+  pub(crate) fn build_recent(&mut self, num_recent: usize) {
+    if self.recent.len() >= num_recent {
+      return
+    }
+    self.recent.clear();
+    let mut heap = BinaryHeap::new();
+    for (s, &stmt) in self.statements.iter().enumerate() {
+      let Some(comment) = stmt.associated_comment() else { continue };
+      let buf = &comment.segment().segment.buffer;
+      let iter = comment.parentheticals().filter_map(|(_, paren)| match paren {
+        Parenthetical::ContributedBy { date, .. }
+        | Parenthetical::RevisedBy { date, .. }
+        | Parenthetical::ProofShortenedBy { date, .. } => Date::try_from(date.as_ref(buf)).ok(),
+        _ => None,
+      });
+      if let Some(date) = iter.max() {
+        heap.push((date, s))
+      }
+    }
+    self.recent.extend(std::iter::from_fn(|| heap.pop()).take(num_recent))
+  }
+
+  pub(crate) fn build_recent_templates<'b>(&mut self, texts: impl Iterator<Item = &'a str>) {
+    self.recent_templates.extend(texts.map(Template::parse))
   }
 
   fn mathbox_lookup(&self, stmt: &StatementRef<'_>) -> Option<Option<&'a str>> {
@@ -1788,6 +1818,107 @@ impl<'a> Renderer<'a> {
       }
     }
     writeln!(w, "</table>\n{FOOTER}</body></html>")
+  }
+
+  pub(crate) fn show_recent<W: Write>(
+    &self, w: &mut W, num_recent: usize, tpl: usize, alt: bool,
+  ) -> io::Result<()> {
+    let db = self.db;
+    let end = self.statements.len();
+    let get_pink = |addr| Some(*self.pink_numbers.get(db.statement_by_address(addr).label())?);
+    let mathbox_num = self.mathbox_addr.and_then(get_pink).unwrap_or(end);
+    let ext_html_num =
+      self.ext_html_addr.and_then(get_pink).unwrap_or(mathbox_num).min(mathbox_num);
+    let scope = db.scope_result();
+    for elem in &self.recent_templates[tpl].0 {
+      match elem {
+        TemplateElem::Text(s) => w.write_all(s.as_bytes())?,
+        TemplateElem::Main => {
+          let mut rest = false;
+          for &(date, s) in &self.recent[..num_recent] {
+            let stmt = self.statements[s];
+            let buf = &stmt.segment().segment.buffer;
+            let desc = stmt.associated_comment().unwrap().comment_contents();
+            let ext = ext_html_num <= s;
+            let mboxness = self.mathbox_lookup(&stmt);
+            let fr = scope.get(stmt.label()).unwrap();
+            let bgclass = DisplayFn(|f| {
+              if ext {
+                write!(f, " class={}", if s < mathbox_num { "ext" } else { "sbox" })?
+              }
+              Ok(())
+            });
+            if rest {
+              writeln!(w, "<tr class=sp><td colspan=3>&nbsp;</td></tr>")?;
+            }
+            rest = true;
+            writeln!(
+              w,
+              "\n\
+              <tr id=\"{label}\"{bgclass}>\
+                <td style=\"white-space: nowrap\">{date}</td>\
+                <td style=\"text-align: center\"><a href=\"{label}.html\">{label}</a>{pink}{dv}</td>\
+                <td class=comment style=\"text-align: left\">{comment}</td>\
+              </tr>\
+              <tr{bgclass}><td colspan=3 style=\"text-align: center\" class=math>{frame}</td></tr>",
+              label = as_str(stmt.label()),
+              pink = self.pink_num(true, Some(s)),
+              dv = if fr.mandatory_dv.is_empty() { "" } else { "*" },
+              comment = self.comment(as_str(desc.as_ref(buf)).trim(), alt, ext && mboxness.is_none()),
+              frame = self.oneline_statement(alt, fr),
+            )?;
+          }
+        }
+        TemplateElem::LastUpdated => {
+          use chrono::{offset::Utc, FixedOffset};
+          // Metamath website has historically been in Eastern Standard Time
+          const EST_TZ: FixedOffset = match FixedOffset::west_opt(5 * 3600) {
+            Some(tz) => tz,
+            None => panic!(),
+          };
+          let now = Utc::now().with_timezone(&EST_TZ);
+          writeln!(w, "<i>Last updated on {} ET.</i>", now.format("%-d-%b-%Y at %-I:%M %p"))?;
+        }
+      }
+    }
+    Ok(())
+  }
+}
+
+enum TemplateElem<'a> {
+  Main,
+  LastUpdated,
+  Text(&'a str),
+}
+
+struct Template<'a>(Vec<TemplateElem<'a>>);
+
+impl<'a> Template<'a> {
+  fn parse(mut body: &'a str) -> Self {
+    const START: &str = "<!-- #START# -->";
+    const END: &str = "<!-- #END# -->";
+    const LAST_UPDATED: &str = "<!-- last updated -->";
+    let mut out = vec![];
+    let mut main = body.find(START).and_then(|n| Some((n + START.len(), body[n..].find(END)? + n)));
+    let mut updated = body.find(LAST_UPDATED).map(|i| i + LAST_UPDATED.len());
+    loop {
+      if let Some((start, end)) = main.filter(|n| !matches!(updated, Some(m) if m < n.0)) {
+        out.push(TemplateElem::Text(&body[..start]));
+        out.push(TemplateElem::Main);
+        body = &body[end..];
+        main = body.find(START).and_then(|n| Some((n + START.len(), body[n..].find(END)? + n)));
+        updated = updated.map(|e| e - end);
+      } else if let Some(end) = updated {
+        out.push(TemplateElem::Text(&body[..end]));
+        out.push(TemplateElem::LastUpdated);
+        body = &body[end..];
+        main = main.map(|(s, e)| (s - end, e - end));
+        updated = body.find(LAST_UPDATED).map(|i| i + LAST_UPDATED.len());
+      } else {
+        out.push(TemplateElem::Text(body));
+        return Template(out)
+      }
+    }
   }
 }
 

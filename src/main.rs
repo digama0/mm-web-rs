@@ -62,8 +62,10 @@ fn main() {
     ThmsAll,
     Extra(Extra),
     ExtraAll,
+    Recent { n: usize, in_: usize, out_: String },
   }
   let mut iter = std::env::args().skip(1);
+  let mut recents = vec![];
   let label = match iter.next().as_deref() {
     Some("write") => {
       let file = iter.next().unwrap();
@@ -99,6 +101,16 @@ fn main() {
               )
             }
           }
+          "recent" => {
+            let n = iter.next().unwrap().parse().expect("expected integer");
+            let in_ = iter.next().unwrap();
+            let in_ = recents.iter().position(|x| in_ == *x).unwrap_or_else(|| {
+              let n = recents.len();
+              recents.push(in_);
+              n
+            });
+            Cmd::Recent { n, in_, out_: iter.next().unwrap() }
+          }
           _ => panic!("expected 'stmt' or 'thms'"),
         };
         cmds.push((alt, cmd))
@@ -107,7 +119,7 @@ fn main() {
     }
     Some("server") => None,
     _ => panic!(
-      "use 'mm-web-rs write <DB> (<gif|uni> <stmt <LABEL|*> | thms <N|*>>) ...' \
+      "use 'mm-web-rs write <DB> (<gif|uni> <stmt <LABEL|*> | thms <N|*> | recent N IN OUT>) ...' \
        or 'mm-web-rs server (<ROUTE> <DB>)...'"
     ),
   };
@@ -124,6 +136,7 @@ fn main() {
     }
 
     let mut renderer = Renderer::new(&db);
+    let recent_buffers: Vec<_>;
 
     if cmds.iter().any(|(_, cmd)| {
       matches!(
@@ -133,11 +146,20 @@ fn main() {
           | Cmd::ThmsAll
           | Cmd::Extra(Extra::Definitions | Extra::TheoremsAll)
           | Cmd::ExtraAll
+          | Cmd::Recent { .. }
       )
     }) {
       renderer.prep_mathbox_lookup();
       renderer
         .build_statements(cmds.iter().any(|(_, cmd)| matches!(cmd, Cmd::Thms(_) | Cmd::ThmsAll)));
+      let max_recent =
+        cmds.iter().fold(0, |m, cmd| if let Cmd::Recent { n, .. } = cmd.1 { m.max(n) } else { m });
+      if max_recent > 0 {
+        renderer.build_recent(max_recent);
+        recent_buffers =
+          recents.iter().map(|file| std::fs::read_to_string(file).unwrap()).collect();
+        renderer.build_recent_templates(recent_buffers.iter().map(|file| &**file))
+      }
     }
 
     if cmds.iter().any(|(_, cmd)| matches!(cmd, Cmd::StmtAll)) {
@@ -201,6 +223,10 @@ fn main() {
             let w = &mut BufWriter::new(File::create(format!("{}.html", extra.label())).unwrap());
             renderer.show_extra(w, extra, alt).unwrap();
           }),
+        Cmd::Recent { n, in_, out_ } => {
+          let w = &mut BufWriter::new(File::create(out_).unwrap());
+          renderer.show_recent(w, n, in_, alt).unwrap();
+        }
       }
     }
   } else {
@@ -213,7 +239,8 @@ fn main() {
 }
 
 #[cfg(feature = "server")]
-fn run_server(mut args: impl Iterator<Item = String>) {
+fn run_server(args: impl Iterator<Item = String>) {
+  let mut args = args.peekable();
   use actix_web::{
     get, rt::System, web::Data, web::Path, App, HttpResponse, HttpServer, Responder,
   };
@@ -226,6 +253,14 @@ fn run_server(mut args: impl Iterator<Item = String>) {
     let mut renderer = Renderer::new(&*Box::leak(db));
     renderer.prep_mathbox_lookup();
     renderer.build_statements(true);
+    if let Some("--recent") = args.peek().map(|x| &**x) {
+      args.next();
+      let n = args.next().unwrap().parse().expect("expected integer");
+      let file = args.next().unwrap();
+      let recent = &*std::fs::read_to_string(file).unwrap().leak();
+      renderer.build_recent(n);
+      renderer.build_recent_templates(std::iter::once(recent));
+    }
     renderers.insert(route, renderer);
   }
   let renderers = Data::new(renderers);
@@ -253,16 +288,31 @@ fn run_server(mut args: impl Iterator<Item = String>) {
     Some(Some(page))
   }
 
+  fn recent_page(r: &Renderer<'_>, page: &str) -> Option<(usize, usize)> {
+    let page = page.strip_prefix("mmrecent")?;
+    let page = if page.is_empty() { 100 } else { page.parse::<usize>().ok()? };
+    if 0 < page && page <= r.recent.len() {
+      return Some((0, page))
+    }
+    None
+  }
+
   fn render_thm(
     rs: &HashMap<String, Renderer<'static>>, db: String, label: String, alt: bool,
   ) -> impl Responder {
     let Some(r) = rs.get(&db) else { return HttpResponse::NotFound().into() };
     let mut w = vec![];
     let now = std::time::Instant::now();
-    if let Some(page) = theorems_page(r, &label) {
-      r.show_theorems(&mut w, page, r.num_pages(), alt).unwrap();
-    } else if let Ok(extra) = label.parse() {
-      r.show_extra(&mut w, extra, alt).unwrap();
+    if label.starts_with("mm") {
+      if let Some(page) = theorems_page(r, &label) {
+        r.show_theorems(&mut w, page, r.num_pages(), alt).unwrap();
+      } else if let Ok(extra) = label.parse() {
+        r.show_extra(&mut w, extra, alt).unwrap();
+      } else if let Some((tpl, n)) = recent_page(r, &label) {
+        r.show_recent(&mut w, n, tpl, alt).unwrap();
+      } else {
+        return HttpResponse::NotFound().into()
+      }
     } else {
       let Some(stmt) = r.db.statement(label.as_bytes()) else {
         return HttpResponse::NotFound().into()
