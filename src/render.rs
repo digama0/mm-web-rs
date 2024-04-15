@@ -107,8 +107,9 @@ impl<'a> Renderer<'a> {
     let ts = &**db.typesetting_result();
     let html_title = ts.html_title.as_ref().map_or("Metamath Test Page", |s| as_str(&s.1));
     let html_home = ts.html_home.as_ref().map_or(
-      "<a href=\"mmset.html\">\
-        <img src=\"mm.gif\" alt=\"Home\" height=32 width=32 \
+      // note: "HREF=" and "IMG SRC=" must be all caps, see #2
+      "<a HREF=\"mmset.html\">\
+        <IMG SRC=\"mm.gif\" alt=\"Home\" height=32 width=32 \
           style=\"vertical-align: middle; margin-bottom: 0\">Home\
       </a>",
       |s| as_str(&s.1),
