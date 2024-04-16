@@ -126,12 +126,7 @@ fn main() {
 
   if let Some((file, cmds)) = label {
     let mut db = new_db(file);
-    if cmds.iter().any(|(_, cmd)| match cmd {
-      Cmd::StmtAll => true,
-      Cmd::Stmt(label) =>
-        db.statement(label.as_bytes()).unwrap().statement_type() == StatementType::Axiom,
-      _ => false,
-    }) {
+    if cmds.iter().any(|(_, cmd)| matches!(cmd, Cmd::Stmt(_) | Cmd::StmtAll)) {
       db.grammar_pass();
     }
 
@@ -164,6 +159,7 @@ fn main() {
 
     if cmds.iter().any(|(_, cmd)| matches!(cmd, Cmd::StmtAll)) {
       renderer.build_used_by();
+      renderer.build_syntax_used();
     }
 
     for (alt, cmd) in cmds {
@@ -253,6 +249,7 @@ fn run_server(args: impl Iterator<Item = String>) {
     let mut renderer = Renderer::new(&*Box::leak(db));
     renderer.prep_mathbox_lookup();
     renderer.build_statements(true);
+    renderer.build_syntax_used();
     if let Some("--recent") = args.peek().map(|x| &**x) {
       args.next();
       let n = args.next().unwrap().parse().expect("expected integer");

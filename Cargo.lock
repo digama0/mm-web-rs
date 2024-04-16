@@ -1053,7 +1053,7 @@ dependencies = [
 
 [[package]]
 name = "metamath-rs"
-version = "0.3.6"
+version = "0.3.8"
 dependencies = [
  "annotate-snippets",
  "filetime",

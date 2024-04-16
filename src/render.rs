@@ -10,7 +10,7 @@ use metamath_rs::{
   *,
 };
 use std::{
-  collections::{BinaryHeap, HashMap, HashSet},
+  collections::{BTreeSet, BinaryHeap, HashMap, HashSet},
   fmt::Display,
   io::{self, Write},
   ops::Bound,
@@ -90,6 +90,7 @@ pub(crate) struct Renderer<'a> {
   syntax_hint: HashMap<&'a [u8], Box<[u8]>>,
   trace_usage: Mutex<TraceUsage<'a>>,
   used_by: Option<HashMap<&'a [u8], Vec<StatementAddress>>>,
+  syntax_used: Option<Vec<Box<[Atom]>>>,
   pub(crate) statements: Vec<StatementRef<'a>>,
   headings: Vec<Heading<'a>>,
   pub(crate) recent: Vec<(Date, usize)>,
@@ -189,6 +190,7 @@ impl<'a> Renderer<'a> {
         .collect(),
       trace_usage: Default::default(),
       used_by: None,
+      syntax_used: None,
       statements: vec![],
       headings: Default::default(),
       recent: vec![],
@@ -217,28 +219,6 @@ impl<'a> Renderer<'a> {
       }
       self.mathbox_lookup = Some(headers)
     }
-  }
-
-  pub(crate) fn build_used_by(&mut self) {
-    if self.used_by.is_some() {
-      return
-    }
-    let mut used_by = HashMap::new();
-    for stmt in self.db.statements() {
-      if !stmt.is_assertion() {
-        continue
-      }
-      used_by.insert(stmt.label(), vec![]);
-      if stmt.statement_type() == StatementType::Provable {
-        let addr = stmt.address();
-        for tk in UseIter::new(stmt) {
-          if let Some(v) = used_by.get_mut(tk) {
-            v.push(addr)
-          }
-        }
-      }
-    }
-    self.used_by = Some(used_by)
   }
 
   pub(crate) fn build_statements(&mut self, and_headers: bool) {
@@ -277,6 +257,46 @@ impl<'a> Renderer<'a> {
     } else {
       self.statements.extend(self.db.statements().filter(|s| s.is_assertion()))
     }
+  }
+
+  pub(crate) fn build_used_by(&mut self) {
+    if self.used_by.is_some() {
+      return
+    }
+    let mut used_by = HashMap::new();
+    for &stmt in &self.statements {
+      used_by.insert(stmt.label(), vec![]);
+      if stmt.statement_type() == StatementType::Provable {
+        let addr = stmt.address();
+        for tk in UseIter::new(stmt) {
+          if let Some(v) = used_by.get_mut(tk) {
+            v.push(addr)
+          }
+        }
+      }
+    }
+    self.used_by = Some(used_by)
+  }
+
+  pub(crate) fn build_syntax_used(&mut self) {
+    if self.syntax_used.is_some() {
+      return
+    }
+    let g = self.db.grammar_result();
+    let names = self.db.name_result();
+    let name_reader = &mut NameReader::new(names);
+    let mut temp = BTreeSet::new();
+    let iter = self.statements.iter().map(|&stmt| {
+      temp.clear();
+      if let Ok(fmla) = g.parse_statement(&stmt, names, name_reader) {
+        temp.extend(fmla.labels_postorder_iter());
+        temp.iter().copied().collect::<Box<[_]>>()
+      } else {
+        eprintln!("failed to parse {}", as_str(stmt.label()));
+        Box::new([])
+      }
+    });
+    self.syntax_used = Some(iter.collect())
   }
 
   pub(crate) fn build_recent(&mut self, num_recent: usize) {
@@ -1097,11 +1117,30 @@ impl<'a> Renderer<'a> {
         }
 
         if is_thm {
-          syntax = proof
-            .trees
-            .iter()
-            .map(|tree| tree.address)
-            .collect::<HashSet<_>>()
+          let mut addrs = proof.trees.iter().map(|tree| tree.address).collect::<HashSet<_>>();
+          let mut atoms = HashSet::new();
+          let names = &mut NameReader::new(frr.names);
+          let g = db.grammar_result();
+          for &addr in &addrs {
+            let stmt = db.statement_by_address(addr);
+            if let Some(syntax_used) = &self
+              .syntax_used
+              .as_ref()
+              .and_then(|syntax_used| Some(&syntax_used[*self.pink_numbers.get(stmt.label())?]))
+            {
+              atoms.extend(syntax_used.iter().copied())
+            } else {
+              match g.parse_statement(&stmt, frr.names, names) {
+                Ok(fmla) => atoms.extend(fmla.labels_postorder_iter()),
+                Err(_) => eprintln!("failed to parse {}", as_str(stmt.label())),
+              }
+            }
+          }
+          for atom in atoms {
+            let token = frr.names.atom_name(atom);
+            addrs.insert(frr.names.lookup_label(token).unwrap().address);
+          }
+          syntax = addrs
             .into_iter()
             .map(|addr| db.statement_by_address(addr))
             .filter_map(|stmt| self.syntax_hint.get(stmt.label()).map(|c| (stmt.label(), c)))
