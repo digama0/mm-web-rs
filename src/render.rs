@@ -981,7 +981,7 @@ impl<'a> Renderer<'a> {
       if let Some(s) =
         db.statements_range_address((Bound::Excluded(cur), Bound::Unbounded)).find(|s| {
           s.statement_type() == StatementType::Axiom && *s.math_at(0) == *b"|-" && {
-            let fr2 = scope.get(stmt.label()).unwrap();
+            let fr2 = scope.get(s.label()).unwrap();
             fr.target.const_ranges().all(|sp| {
               sp.is_empty() || {
                 let sp = &fr.const_pool[sp];
