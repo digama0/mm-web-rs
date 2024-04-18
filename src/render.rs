@@ -522,9 +522,9 @@ impl Display for Comment<'_, '_> {
             }
           }
           if htmls == 0 {
-            write!(f, "{s}")?
-          } else {
             write!(f, "{}", html_escape(s))?
+          } else {
+            write!(f, "{s}")?
           }
         }
         CommentItem::LineBreak(_) => {
@@ -774,7 +774,8 @@ impl<'a> Renderer<'a> {
                   height=32 width=32 style=\"vertical-align: top; margin-bottom: 0px\">\n\
               </a>\n\
             </td>\n\
-            <td style=\"padding: 0; text-align: center; vertical-align: top\" colspan=2>\n\
+            <td class=title \
+                style=\"padding: 0; text-align: center; vertical-align: top\" colspan=2>\n\
               <span style=\"font-size: xx-large\">{title}</span>\n\
             </td>\n\
             <td style=\"padding: 0; text-align: right; vertical-align: top; width: 25%; \
@@ -1313,13 +1314,15 @@ impl<'a> Renderer<'a> {
         .r {{ font-family: \"Arial Narrow\"; font-size: x-small; }}\n\
         .top td {{ padding: 1px; }}\n\
         .color-key td {{ padding: 5px; }}\n\
-        .thlist {{ \
+        .thlist:not(.comment *) {{ \
           border-spacing: 0; margin: auto; background-color: {bgcolor}; \
           border: outset 1px {border_color}; \
         }}\n\
         .title {{ font-weight: bold; color: {title_color}; }}\n\
         hr {{ border: 1px solid gray; border-bottom: 0; }}\n\
-        .thlist td, .thlist th {{ padding: 3px; border: inset 1px {border_color}; }}\n\
+        .thlist td:not(.comment *), .thlist th {{ \
+          padding: 3px; border: inset 1px {border_color}; \
+        }}\n\
         .sp {{ background-color: white; }}\n\
         .sp td {{ font-size: x-small; }}\n\
         .th {{ white-space: nowrap; }}\n\
