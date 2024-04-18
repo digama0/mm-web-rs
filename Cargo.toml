@@ -13,7 +13,7 @@ default = ["server"]
 server = ["actix-web"]
 
 [dependencies]
-metamath-rs = { path = "../metamath-knife/metamath-rs" }
+metamath-rs = { path = "../metamath-knife/metamath-rs", default-features = false }
 rayon = "1.8"
 actix-web = { version = "3.3", optional = true }
 itertools = "0.10"

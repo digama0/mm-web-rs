@@ -1314,13 +1314,13 @@ impl<'a> Renderer<'a> {
         .r {{ font-family: \"Arial Narrow\"; font-size: x-small; }}\n\
         .top td {{ padding: 1px; }}\n\
         .color-key td {{ padding: 5px; }}\n\
-        .thlist:not(.comment *) {{ \
+        .thlist {{ \
           border-spacing: 0; margin: auto; background-color: {bgcolor}; \
           border: outset 1px {border_color}; \
         }}\n\
         .title {{ font-weight: bold; color: {title_color}; }}\n\
         hr {{ border: 1px solid gray; border-bottom: 0; }}\n\
-        .thlist td:not(.comment *), .thlist th {{ \
+        .thlist > * > * > td, .thlist > * > * > th {{ \
           padding: 3px; border: inset 1px {border_color}; \
         }}\n\
         .sp {{ background-color: white; }}\n\
@@ -1329,7 +1329,7 @@ impl<'a> Renderer<'a> {
         .stx {{ white-space: nowrap; font-weight: bold; color: #00CC00; }}\n\
         .ax {{ white-space: nowrap; font-weight: bold; color: red; }}\n\
         .df {{ white-space: nowrap; font-weight: bold; color: blue; }}\n\
-        .comment p {{ margin-bottom: 0; }}\n\
+        .comment > p {{ margin-bottom: 0; }}\n\
         .heading {{ background-color: #FFFFF2; }}\n\
         .heading h1, .heading h2 {{ font-size: large; text-align: center; margin: 0; }}\n\
         .heading h3, .heading h4 {{ font-size: medium; text-align: center; margin: 0; }}\n\
