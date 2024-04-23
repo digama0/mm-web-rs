@@ -760,7 +760,7 @@ impl<'a> Renderer<'a> {
         hr {{ border-style: solid; border-top: 1px; }}\n\
         .r {{ font-family: \"Arial Narrow\"; font-size: x-small; }}\n\
         .i {{ font-family: \"Arial Narrow\"; font-size: x-small; color: gray; }}\n\
-        .comment p {{ margin-bottom: 0 }}\n\
+        .comment > p {{ margin-bottom: 0 }}\n\
         </style>\n\
         {css}\n\
         <title>{label} - {title}</title>\n\
